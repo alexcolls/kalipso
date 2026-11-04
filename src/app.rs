@@ -14,11 +14,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::chat::{AGENTS, ChatCmd, ChatEvent, Chats, ModelsFor};
+use crate::chat::{AGENTS, ChatCmd, ChatEvent, Chats, EditorContext, ModelsFor};
 use crate::editor::{self, Buffer, Editor, EditorCmd, SELECTION_BG, col_to_display, render_line};
 use crate::files::{self, FileTree, FilesCmd, safe_join};
 use crate::llm::{ModelInfo, Provider};
 use crate::term::Terminals;
+use crate::tools;
+
+/// The most selected text sent along with a chat message.
+const MAX_CONTEXT_BYTES: usize = 32 * 1024;
 
 /// Everything the main thread reacts to. Worker threads only ever send these.
 pub enum Event {
@@ -395,11 +399,54 @@ impl App {
                 }
                 Focus::Terminal => self.terminals.on_key(key),
                 Focus::Chat => {
-                    let cmd = self.chats.on_key(key, &self.clipboard);
+                    let sending = key.code == KeyCode::Enter && key.modifiers.is_empty();
+                    let context = if sending { self.editor_context() } else { None };
+                    let cmd = self.chats.on_key(key, &self.clipboard, context);
                     self.run_chat_cmd(cmd);
                 }
             }
         }
+    }
+
+    /// What's open in the editor, so "this file" means something to an agent. Selected text
+    /// from private files stays out: only the agent's read tool, which asks first, may send those.
+    fn editor_context(&self) -> Option<EditorContext> {
+        let doc = self.editor.docs.get(self.editor.active)?;
+        let line = doc.buf.cursor.line + 1;
+        let (name, private) = match &doc.path {
+            Some(path) => {
+                let shown = self.display_path(path);
+                let private = tools::resolve(&self.root, &shown).map_or(true, |real| tools::is_sensitive(&self.root, &real));
+                (shown, private)
+            }
+            None => ("an untitled buffer".to_owned(), false),
+        };
+        let mut label = format!("with {name}:{line}");
+        let mut for_model = format!("[Editor state, for context only: {name} is open with the cursor on line {line}.");
+        if doc.buf.is_dirty() {
+            for_model.push_str(" It has unsaved changes, so the file on disk differs.");
+        }
+        if let (Some((start, end)), Some(selected)) = (doc.buf.selection(), doc.buf.selected_text()) {
+            let count = end.line - start.line + 1;
+            if private {
+                label.push_str(", selection not sent because this file may be private");
+            } else {
+                let mut cut = selected.len().min(MAX_CONTEXT_BYTES);
+                while !selected.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                let clipped = if cut < selected.len() { "\n[The selection is cut off here.]" } else { "" };
+                label.push_str(&format!(", {count} selected lines"));
+                for_model.push_str(&format!(
+                    "\nSelected lines {}-{}:\n<selection>\n{}{clipped}\n</selection>",
+                    start.line + 1,
+                    end.line + 1,
+                    &selected[..cut]
+                ));
+            }
+        }
+        for_model.push(']');
+        Some(EditorContext { label, for_model })
     }
 
     fn run_chat_cmd(&mut self, cmd: ChatCmd) {
@@ -1229,6 +1276,53 @@ mod tests {
         assert_eq!(app.focus, Focus::Editor);
         assert_eq!(app.editor.docs[0].buf.text(), "found it");
         assert_eq!(app.files.rows[app.files.selected].name, "needle.rs", "the tree reveals it");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn editor_context_describes_what_is_open_and_withholds_private_selections() {
+        let (mut app, dir) = app_in("context");
+        assert!(app.editor_context().is_none(), "nothing open, nothing to say");
+
+        fs::write(dir.join("code.rs"), "one\ntwo\nthree\n").unwrap();
+        app.open_file(&dir.join("code.rs"));
+        let doc = app.editor.doc().unwrap();
+        doc.buf.set_cursor(crate::editor::Pos { line: 1, col: 0 }, false);
+        let context = app.editor_context().unwrap();
+        assert_eq!(context.label, "with code.rs:2");
+        assert_eq!(context.for_model, "[Editor state, for context only: code.rs is open with the cursor on line 2.]");
+
+        let doc = app.editor.doc().unwrap();
+        doc.buf.set_cursor(crate::editor::Pos { line: 2, col: 5 }, true);
+        let context = app.editor_context().unwrap();
+        assert_eq!(context.label, "with code.rs:3, 2 selected lines");
+        assert!(context.for_model.contains("Selected lines 2-3:\n<selection>\ntwo\nthree\n</selection>"), "{}", context.for_model);
+
+        app.editor.doc().unwrap().buf.insert("x");
+        assert!(app.editor_context().unwrap().for_model.contains("unsaved changes"));
+
+        // A selection in a private file must not reach a provider without the read approval.
+        for private in [".env", "secret.pem", "ignored.txt"] {
+            fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+            fs::write(dir.join(private), "API_KEY=hunter2\nmore").unwrap();
+            app.open_file(&dir.join(private));
+            let doc = app.editor.doc().unwrap();
+            doc.buf.edit_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), 1, "");
+            let context = app.editor_context().unwrap();
+            assert!(!context.for_model.contains("hunter2"), "{private}: {}", context.for_model);
+            assert!(context.label.contains("selection not sent"), "{private}: {}", context.label);
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_huge_selection_is_cut_on_a_character_boundary() {
+        let (mut app, dir) = app_in("hugeselect");
+        fs::write(dir.join("big.txt"), "日本語".repeat(MAX_CONTEXT_BYTES)).unwrap();
+        app.open_file(&dir.join("big.txt"));
+        app.editor.doc().unwrap().buf.edit_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), 1, "");
+        let text = app.editor_context().unwrap().for_model;
+        assert!(text.contains("cut off") && text.len() < MAX_CONTEXT_BYTES + 300);
         fs::remove_dir_all(&dir).unwrap();
     }
 
