@@ -54,9 +54,8 @@ Ctrl+V pastes what you copied in Kalipso; use your terminal's paste (usually Ctr
 text from other programs. The gutter marks lines that differ from git's HEAD: green added, yellow
 changed, red for deleted lines.
 
-The gutter and tree also need nothing set up, but **language servers** do: **F12** goes to a definition,
-**Shift+F12** comes back, and **F8** moves between problems, which are also shown next to their lines.
-See [Language servers](#language-servers).
+With a language server, **F12** goes to a definition, **Shift+F12** comes back, and **F8** moves
+between problems, which are also shown next to their lines. See [Language servers](#language-servers).
 
 **Terminal:** every other key goes to the shell. Alt+S enters scroll mode, and the wheel scrolls.
 
