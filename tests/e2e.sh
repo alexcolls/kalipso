@@ -207,7 +207,7 @@ cursor_on "F12 finds the definition from past an emoji, and lands on its name" "
 expect "problems appear next to their line" "BAD line   mock problem: BAD"
 key S-F12; cursor_on "Shift+F12 comes back to the call" "target();" 1
 key F8; expect "F8 jumps to a problem and describes it" "1 problem: mock problem: BAD"
-if grep -qF 'kalipso' "$CONFIG/kalipso/config.json" && grep -qF 'rust-analyzer' "$CONFIG/kalipso/config.json"; then pass "the answer is saved"; else fail "the answer is saved"; fi
+if grep -qF "$(cd "$WORK" && pwd -P)" "$CONFIG/kalipso/config.json" && grep -qF 'rust-analyzer' "$CONFIG/kalipso/config.json"; then pass "the answer is saved"; else fail "the answer is saved"; fi
 
 key M-f; expect "Alt+F asks what to search for" "Search project"
 key -l 'needle_in'; key Enter
