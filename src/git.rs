@@ -32,9 +32,57 @@ fn git(dir: &Path) -> Command {
         .current_dir(dir)
         .args(["-c", "core.fsmonitor=false"])
         .env("GIT_OPTIONAL_LOCKS", "0") // Don't take locks that could block the user's own git.
+        // A partial clone fetches missing objects on demand, using transport settings such as
+        // core.sshCommand from its config. Older versions of git only obey the second of these.
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "none")
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     command
+}
+
+/// `-c` arguments that turn off the filters a repository sets up for itself, which `git status`
+/// runs on any file whose contents it has to compare. Filters in the user's own config stay on.
+/// `None` means they can't be turned off, so `git status` must not run.
+fn filter_overrides(root: &Path) -> Option<Vec<String>> {
+    let listing = git(root)
+        .args([
+            "config",
+            "--show-scope",
+            "--name-only",
+            "-z",
+            "--get-regexp",
+            r"^filter\.",
+        ])
+        .output()
+        .ok()?;
+    // 1 means nothing matched. Anything else could be a git too old for --show-scope.
+    if !matches!(listing.status.code(), Some(0 | 1)) {
+        return None;
+    }
+    let mut overrides = Vec::new();
+    let mut fields = listing.stdout.split(|byte| *byte == 0);
+    while let (Some(scope), Some(name)) = (fields.next(), fields.next()) {
+        if matches!(scope, b"global" | b"system") {
+            continue;
+        }
+        let name = std::str::from_utf8(name).ok()?;
+        let Some((driver, _)) = name
+            .strip_prefix("filter.")
+            .and_then(|rest| rest.rsplit_once('.'))
+        else {
+            continue;
+        };
+        // `-c` splits at the first =, so it has no way to name this driver.
+        if driver.contains('=') {
+            return None;
+        }
+        for setting in ["clean=", "process=", "required=false"] {
+            overrides.push("-c".to_owned());
+            overrides.push(format!("filter.{driver}.{setting}"));
+        }
+    }
+    Some(overrides)
 }
 
 fn output(command: &mut Command) -> Option<Vec<u8>> {
@@ -53,7 +101,7 @@ pub fn snapshot(root: &Path, known: &[(PathBuf, Option<String>)]) -> Option<Snap
     let top = text_line(output(git(root).args(["rev-parse", "--show-toplevel"]))?)?;
     let top = Path::new(&top).canonicalize().ok()?;
     let head = output(git(root).args(["rev-parse", "--verify", "-q", "HEAD"])).and_then(text_line);
-    let status = output(git(root).args([
+    let status = output(git(root).args(filter_overrides(root)?).args([
         "status",
         "--porcelain=v1",
         "-z",
@@ -392,5 +440,143 @@ mod tests {
             "a program named in the repository's config ran"
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A script that leaves a marker if anything runs it, and the marker's path.
+    fn tripwire(dir: &Path) -> (String, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let marker = dir.join("ran");
+        let script = dir.join("evil.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        (script.to_str().unwrap().to_owned(), marker)
+    }
+
+    /// A repository whose a.txt uses a filter and is about to have its contents compared:
+    /// the size hasn't changed, but it isn't the file the index recorded.
+    fn filtered_repo(name: &str, driver: &str) -> PathBuf {
+        let dir = repo(name);
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        fs::write(
+            dir.join(".gitattributes"),
+            format!("*.txt filter={driver}\n"),
+        )
+        .unwrap();
+        run(&dir, &["add", "."]);
+        run(&dir, &["commit", "-qm", "first"]);
+        fs::write(dir.join("a.tmp"), "two\n").unwrap();
+        fs::rename(dir.join("a.tmp"), dir.join("a.txt")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_repositorys_own_filters_never_run_and_changes_still_show() {
+        type Setup = fn(&Path, &str);
+        let cases: [(&str, &str, Setup); 7] = [
+            ("clean", "probe", |dir, script| {
+                run(dir, &["config", "filter.probe.clean", script]);
+            }),
+            ("process", "probe", |dir, script| {
+                run(dir, &["config", "filter.probe.process", script]);
+            }),
+            ("required", "probe", |dir, script| {
+                run(dir, &["config", "filter.probe.clean", script]);
+                run(dir, &["config", "filter.probe.required", "true"]);
+            }),
+            ("dotted", "a.b", |dir, script| {
+                run(dir, &["config", "filter.a.b.clean", script]);
+            }),
+            ("included", "probe", |dir, script| {
+                let text = format!("[filter \"probe\"]\n\tclean = {script}\n");
+                fs::write(dir.join(".git/extra"), text).unwrap();
+                run(dir, &["config", "include.path", "extra"]);
+            }),
+            ("worktree", "probe", |dir, script| {
+                run(dir, &["config", "extensions.worktreeConfig", "true"]);
+                run(dir, &["config", "--worktree", "filter.probe.clean", script]);
+            }),
+            ("info", "none", |dir, script| {
+                fs::create_dir_all(dir.join(".git/info")).unwrap();
+                fs::write(dir.join(".git/info/attributes"), "*.txt filter=probe\n").unwrap();
+                run(dir, &["config", "filter.probe.clean", script]);
+            }),
+        ];
+        let mut ran = Vec::new();
+        for (name, driver, setup) in cases {
+            let dir = filtered_repo(&format!("filter-{name}"), driver);
+            let (script, marker) = tripwire(&dir);
+            setup(&dir, &script);
+            let result = snapshot(&dir, &[]);
+            if marker.exists() {
+                ran.push(name);
+            } else {
+                let result = result.unwrap_or_else(|| panic!("{name}: no snapshot"));
+                assert_eq!(
+                    result.changes[&dir.join("a.txt")],
+                    Change::Modified,
+                    "{name}: marks still work"
+                );
+            }
+            fs::remove_dir_all(&dir).unwrap();
+        }
+        assert!(ran.is_empty(), "filters that ran: {ran:?}");
+    }
+
+    #[test]
+    fn a_filter_that_cannot_be_turned_off_means_no_git_information() {
+        let dir = filtered_repo("filter-equals", "a=b");
+        let (script, marker) = tripwire(&dir);
+        run(&dir, &["config", "filter.a=b.clean", &script]);
+        assert!(snapshot(&dir, &[]).is_none());
+        assert!(!marker.exists(), "the repository's filter ran");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_partial_clone_never_fetches_with_settings_from_its_own_config() {
+        let upstream = repo("lazy-upstream");
+        fs::write(upstream.join("a.txt"), "one\n").unwrap();
+        run(&upstream, &["add", "."]);
+        run(&upstream, &["commit", "-qm", "first"]);
+        run(&upstream, &["config", "uploadpack.allowFilter", "true"]);
+        let dir = upstream.with_file_name(format!("kalipso-git-lazy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let source = format!("file://{}", upstream.display());
+        run(
+            &upstream,
+            &[
+                "clone",
+                "-q",
+                "--no-checkout",
+                "--filter=blob:none",
+                &source,
+                dir.to_str().unwrap(),
+            ],
+        );
+        run(&dir, &["read-tree", "HEAD"]);
+        let (script, marker) = tripwire(&dir);
+        for (url, key, value) in [
+            (
+                "ssh://nowhere.invalid/x".to_owned(),
+                "core.sshCommand",
+                script.as_str(),
+            ),
+            (format!("ext::{script}"), "protocol.ext.allow", "always"),
+        ] {
+            run(&dir, &["config", "remote.origin.url", &url]);
+            run(&dir, &["config", key, value]);
+            let result = snapshot(&dir, &[(dir.join("a.txt"), None)]).unwrap();
+            assert_eq!(result.bases[0].1, None, "{url}");
+            assert!(
+                !marker.exists(),
+                "{url}: a fetch ran a program from the config"
+            );
+        }
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&upstream).unwrap();
     }
 }
