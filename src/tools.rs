@@ -401,12 +401,17 @@ fn list_dir(input: &Value, root: &Path) -> Result<String, String> {
     Ok(if out.is_empty() { "(empty folder)".to_owned() } else { out })
 }
 
-fn search(input: &Value, root: &Path) -> Result<String, String> {
-    let pattern = regex::Regex::new(text_field(input, "pattern")).map_err(|err| format!("Invalid pattern: {err}"))?;
-    let base = resolve(root, text_field(input, "path"))?;
-    let mut out = String::new();
-    let mut matches = 0;
-    for entry in walker(&base).build().flatten() {
+pub struct SearchHit {
+    pub path: String,
+    pub line: usize,
+    pub text: String,
+}
+
+/// Matches in text files under `base`, up to `limit`. Gitignored and private files are
+/// skipped. The bool says whether there were more.
+pub fn search_files(root: &Path, base: &Path, pattern: &regex::Regex, limit: usize) -> (Vec<SearchHit>, bool) {
+    let mut hits = Vec::new();
+    for entry in walker(base).build().flatten() {
         let path = entry.path();
         if !entry.file_type().is_some_and(|kind| kind.is_file()) || is_sensitive(root, path) {
             continue;
@@ -418,17 +423,29 @@ fn search(input: &Value, root: &Path) -> Result<String, String> {
         let shown = path.strip_prefix(root).unwrap_or(path).display().to_string();
         for (index, line) in text.lines().enumerate() {
             if pattern.is_match(line) {
-                if matches == SEARCH_MAX_MATCHES {
-                    out.push_str(&format!("[Stopped at {SEARCH_MAX_MATCHES} matches. Narrow the search.]\n"));
-                    return Ok(out);
+                if hits.len() == limit {
+                    return (hits, true);
                 }
-                let clipped: String = line.chars().take(SEARCH_MAX_LINE_CHARS).collect();
-                out.push_str(&format!("{shown}:{}: {clipped}\n", index + 1));
-                matches += 1;
+                let text = line.chars().take(SEARCH_MAX_LINE_CHARS).collect();
+                hits.push(SearchHit { path: shown.clone(), line: index + 1, text });
             }
         }
     }
-    Ok(if out.is_empty() { "No matches.".to_owned() } else { out })
+    (hits, false)
+}
+
+fn search(input: &Value, root: &Path) -> Result<String, String> {
+    let pattern = regex::Regex::new(text_field(input, "pattern")).map_err(|err| format!("Invalid pattern: {err}"))?;
+    let base = resolve(root, text_field(input, "path"))?;
+    let (hits, more) = search_files(root, &base, &pattern, SEARCH_MAX_MATCHES);
+    if hits.is_empty() {
+        return Ok("No matches.".to_owned());
+    }
+    let mut out: String = hits.iter().map(|hit| format!("{}:{}: {}\n", hit.path, hit.line, hit.text)).collect();
+    if more {
+        out.push_str(&format!("[Stopped at {SEARCH_MAX_MATCHES} matches. Narrow the search.]\n"));
+    }
+    Ok(out)
 }
 
 fn write_file(input: &Value, root: &Path) -> Result<String, String> {

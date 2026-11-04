@@ -583,10 +583,7 @@ impl Buffer {
     /// Finds `query` after (or before) the cursor, wrapping once, and selects it.
     /// All-lowercase queries match case-insensitively.
     pub fn find(&mut self, query: &str, forward: bool) -> bool {
-        let insensitive = !query.chars().any(char::is_uppercase);
-        let Ok(re) = regex::RegexBuilder::new(&regex::escape(query)).case_insensitive(insensitive).build() else {
-            return false;
-        };
+        let Some(re) = literal_regex(query) else { return false };
         let from = self.selection().map_or(self.cursor, |(start, end)| if forward { end } else { start });
         let total = self.lines.len();
         let found = if forward {
@@ -607,6 +604,12 @@ impl Buffer {
         self.set_cursor(Pos { line, col: range.end }, true);
         true
     }
+}
+
+/// Matches `query` as plain text. All-lowercase queries ignore case.
+pub fn literal_regex(query: &str) -> Option<regex::Regex> {
+    let insensitive = !query.chars().any(char::is_uppercase);
+    regex::RegexBuilder::new(&regex::escape(query)).case_insensitive(insensitive).build().ok()
 }
 
 /// Reads a file as text, refusing anything that couldn't be saved back unchanged.
