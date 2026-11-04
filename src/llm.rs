@@ -705,8 +705,18 @@ impl Parser for ChatParser {
 pub struct ModelInfo {
     pub id: String,
     pub features: ClaudeFeatures,
+    /// Input limit in tokens, where the provider publishes one.
+    pub context: Option<u64>,
     /// Output limit in tokens, where the provider publishes one.
     pub max_output: Option<u64>,
+}
+
+/// Whether an error or stop reason means the conversation no longer fits the model.
+pub fn is_context_overflow(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    ["prompt is too long", "context_length_exceeded", "maximum context length", "maximum prompt length", "context window", "context_window"]
+        .iter()
+        .any(|phrase| lower.contains(phrase))
 }
 
 /// Lists the chat models a provider offers, newest first where the API gives dates.
@@ -765,6 +775,8 @@ fn models_from(provider: Provider, parsed: &Value) -> Vec<ModelInfo> {
                     adaptive_thinking: capabilities["thinking"]["types"]["adaptive"]["supported"] == true,
                     effort: capabilities["effort"]["supported"] == true,
                 },
+                // Claude says max_input_tokens, OpenRouter says context_length.
+                context: model["max_input_tokens"].as_u64().or(model["context_length"].as_u64()),
                 max_output: model["max_tokens"].as_u64(),
             })
         })
@@ -896,6 +908,22 @@ mod tests {
         assert_eq!(build_body(&req).1["max_tokens"], 8192);
         req.max_output = Some(128000);
         assert_eq!(build_body(&req).1["max_tokens"], 64000, "a higher cap doesn't raise the default");
+    }
+
+    #[test]
+    fn context_overflow_is_recognised_from_every_provider() {
+        for message in [
+            "HTTP 400: prompt is too long: 210000 tokens > 200000 maximum",
+            "HTTP 400: This model's maximum context length is 128000 tokens.",
+            "HTTP 400: Your input exceeds the context window of this model.",
+            "HTTP 400: This model's maximum prompt length is 131072 but the request contains 140000 tokens.",
+            "HTTP 400: This endpoint's maximum context length is 8192 tokens.",
+            "model_context_window_exceeded",
+        ] {
+            assert!(is_context_overflow(message), "{message}");
+        }
+        assert!(!is_context_overflow("HTTP 400: invalid x-api-key"));
+        assert!(!is_context_overflow("The connection closed before the response finished."));
     }
 
     #[test]
@@ -1185,13 +1213,15 @@ mod tests {
     #[test]
     fn model_lists_are_filtered_for_chat_use() {
         let claude = json!({"data": [
-            {"id": "new", "capabilities": {"thinking": {"types": {"adaptive": {"supported": true}}}, "effort": {"supported": true}}},
+            {"id": "new", "max_input_tokens": 1000000, "max_tokens": 128000, "capabilities": {"thinking": {"types": {"adaptive": {"supported": true}}}, "effort": {"supported": true}}},
             {"id": "old", "capabilities": {"thinking": {"types": {"adaptive": {"supported": false}}}, "effort": {"supported": false}}},
             {"id": "bare"}
         ]});
         let models = models_from(Provider::Claude, &claude);
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["new", "old", "bare"]);
         assert_eq!(models[0].features, ClaudeFeatures { adaptive_thinking: true, effort: true });
+        assert_eq!((models[0].context, models[0].max_output), (Some(1000000), Some(128000)));
+        assert_eq!((models[2].context, models[2].max_output), (None, None));
         assert_eq!(models[1].features, ClaudeFeatures { adaptive_thinking: false, effort: false });
         assert_eq!(models[2].features, ClaudeFeatures { adaptive_thinking: false, effort: false });
 
@@ -1205,11 +1235,13 @@ mod tests {
         assert_eq!(ids, ["gpt-new", "gpt-old"]);
 
         let router = json!({"data": [
-            {"id": "a/tools", "supported_parameters": ["tools", "temperature"]},
+            {"id": "a/tools", "context_length": 8192, "supported_parameters": ["tools", "temperature"]},
             {"id": "b/notools", "supported_parameters": ["temperature"]},
             {"id": "c/unknown"}
         ]});
-        let ids: Vec<String> = models_from(Provider::OpenRouter, &router).into_iter().map(|m| m.id).collect();
+        let models = models_from(Provider::OpenRouter, &router);
+        assert_eq!(models[0].context, Some(8192));
+        let ids: Vec<String> = models.into_iter().map(|m| m.id).collect();
         assert_eq!(ids, ["a/tools", "c/unknown"]);
     }
 
