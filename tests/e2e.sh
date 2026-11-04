@@ -36,6 +36,34 @@ gone() {
     done
     fail "$name (still showing: $text)"
 }
+# Column and row of some text on screen, counting from 1. Python, because mawk's index()
+# counts bytes and the borders are multi-byte.
+locate() {
+    screen | python3 -c 'import sys
+for row, line in enumerate(sys.stdin, 1):
+    col = line.find(sys.argv[1])
+    if col >= 0:
+        print(col + 1, row)
+        break' "$1"
+}
+# Drags the mouse over `length` columns starting at some text, using real SGR mouse input.
+drag_over() {
+    local col row end
+    read -r col row < <(locate "$1")
+    end=$((col + $2 - 1))
+    key -l $'\e[<0;'"$col;$row"'M'
+    key -l $'\e[<32;'"$end;$row"'M'
+    key -l $'\e[<0;'"$end;$row"'m'
+}
+# What the app sent to the clipboard. tmux keeps it because of set-clipboard below.
+clipboard_is() {
+    local name=$1 want=$2 i
+    for i in $(seq 30); do
+        [ "$("${T[@]}" show-buffer 2>/dev/null)" = "$want" ] && { pass "$name"; return; }
+        sleep 0.1
+    done
+    fail "$name (clipboard: $("${T[@]}" show-buffer 2>/dev/null))"
+}
 # Status line starts with the focused pane's title.
 focus() {
     local name=$1 title=$2 i
@@ -49,7 +77,7 @@ focus() {
 # Fixture project.
 mkdir -p "$WORK/sub"
 printf 'fn main() {\n    println!("hello");\n}\n' > "$WORK/hello.rs"
-printf 'nested\n' > "$WORK/sub/nested.txt"
+printf 'inner text here\n' > "$WORK/sub/nested.txt"
 printf 'ignored.txt\n' > "$WORK/.gitignore"
 printf 'secret\n' > "$WORK/ignored.txt"
 
@@ -59,6 +87,7 @@ printf 'secret\n' > "$WORK/ignored.txt"
 "${T[@]}" new-session -d -s kalipso -x 140 -y 45 -c "$WORK" env SHELL=/bin/sh \
     ANTHROPIC_API_KEY=e2e-test-key ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$CONFIG/port")/v1" \
     XDG_CONFIG_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= "$BIN"
+"${T[@]}" set-option -s set-clipboard on
 expect "starts with all panes" "1 Files"
 expect "terminal pane visible" "2 Terminal"
 expect "editor pane visible" "3 Editor"
@@ -128,11 +157,24 @@ key M-1; key d; expect "delete asks first" "Delete made/by/test.txt?"
 key y; gone "tree drops deleted file" "test.txt ●"
 if [ -e "$WORK/made/by/test.txt" ]; then fail "delete removes the file"; else pass "delete removes the file"; fi
 
+key C-p; expect "Ctrl+P opens the file picker" "Open file"
+key -l 'zzzz'; expect "the picker can match nothing" "(no matches)"
+key BSpace; key BSpace; key BSpace; key BSpace
+key -l 'nstd'; key Enter
+focus "the picker opens the fuzzy match in the editor" "3 Editor"
+expect "the matched file's content is shown" "inner text here"
+
 # --- Terminal
 key M-2
 focus "terminal focused" "2 Terminal"
 key -l 'echo sum=$((40+2))'; key Enter
 expect "shell runs commands" "sum=42"
+drag_over "sum=42" 6
+expect "dragging in the terminal reports a copy" "Copied 6 characters."
+clipboard_is "dragging in the terminal reaches the clipboard" "sum=42"
+key C-p
+if screen | grep -qF "Open file"; then fail "Ctrl+P is left to the shell"; else pass "Ctrl+P is left to the shell"; fi
+key C-c
 key -l 'pwd > pwd.txt'; key Enter
 for i in $(seq 30); do [ -s "$WORK/pwd.txt" ] && break; sleep 0.1; done
 if [ "$(cat "$WORK/pwd.txt" 2>/dev/null)" = "$(cd "$WORK" && pwd -P)" ]; then pass "shell starts in the project root"; else fail "shell starts in the project root"; fi
@@ -151,9 +193,11 @@ expect "output flood finishes" "3000"
 key M-s; expect "Alt+S shows scroll mode" "SCROLL MODE"
 key PPage; expect "scroll mode reads scrollback" "2990"
 key Escape; gone "Esc leaves scroll mode" "SCROLL MODE"
-key -l 'vim -u NONE -c "set noswapfile" -c "normal ivim works" scratch.txt'; key Enter
-expect "full-screen programs render" "vim works"
+# Two separate commands, so "abcdef" can only come from vim drawing, not the typed command line.
+key -l 'vim -u NONE -c "set noswapfile" -c "normal iabc" -c "normal adef" scratch.txt'; key Enter
+expect "full-screen programs render" "abcdef"
 key -l ':q!'; key Enter
+gone "leaving a full-screen program restores the shell's screen" "abcdef"
 key -l 'echo vimdone=$((5+5))'; key Enter
 expect "shell is back after a full-screen program" "vimdone=10"
 key M-Left; focus "Alt+Left leaves the terminal even mid-session" "1 Files"
@@ -224,15 +268,30 @@ if grep -qF 'claude-sonnet-mock' "$CONFIG/kalipso/config.json" 2>/dev/null; then
 key -l 'hello there'; key Enter
 expect "a second message gets a reply" "Hello from the mock."
 
+key -l 'what is open'; key Enter
+expect "the transcript says what was sent along" "with sub/nested.txt:1"
+expect "the agent receives the editor state" "You have sub/nested.txt open."
+key -l '/copy'; key Enter
+expect "/copy reports it" "Copied the last reply."
+clipboard_is "/copy reaches the clipboard" "You have sub/nested.txt open."
+drag_over "You have" 8
+expect "dragging in the chat reports a copy" "Copied 8 characters."
+clipboard_is "dragging in the chat reaches the clipboard" "You have"
+key -l '/compact'; key Enter
+expect "/compact summarizes" "Summarized the conversation"
+expect "the transcript survives a summary" "You have sub/nested.txt open."
+key -l 'say something new'; key Enter
+expect "the chat continues after a summary" "A new reply after the summary."
+
 key M-t; expect "Alt+T in chat opens the picker" "New chat: pick an agent"
 key -l 'design'; key Enter
 expect "a second chat tab opens" "Design 3"
-gone "a new chat starts empty" "Hello from the mock."
-key M-PPage; expect "Alt+PgUp returns to the other chat's transcript" "Hello from the mock."
-key M-PPage; gone "Alt+PgUp wraps around" "Hello from the mock."
+gone "a new chat starts empty" "A new reply after the summary."
+key M-PPage; expect "Alt+PgUp returns to the other chat's transcript" "A new reply after the summary."
+key M-PPage; gone "Alt+PgUp wraps around" "A new reply after the summary."
 key M-w; gone "Alt+W closes a chat tab" "Design 3"
 
-key M-z; expect "chat can zoom" "Hello from the mock."
+key M-z; expect "chat can zoom" "A new reply after the summary."
 gone "zoom hides the file tree" "1 Files"
 key M-z; expect "zoom restores" "1 Files"
 

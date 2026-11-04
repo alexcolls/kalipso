@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A fake Claude API for tests/e2e.sh. Writes its port to the file given as argv[1]."""
 import json
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -38,8 +39,15 @@ def turn(blocks, stop):
 
 def reply(body):
     """The script: ask to write a file, then finish once a tool result comes back."""
+    if "tools" not in body:
+        return turn([{"type": "text", "text": "Summary of the session."}], "end_turn")
     last = body["messages"][-1]
     text = json.dumps(last["content"])
+    if "what is open" in text:
+        found = re.search(r"Editor state, for context only: (\S+) is open", text)
+        return turn([{"type": "text", "text": f"You have {found.group(1) if found else 'nothing'} open."}], "end_turn")
+    if "say something new" in text:
+        return turn([{"type": "text", "text": "A new reply after the summary."}], "end_turn")
     if isinstance(last["content"], list) and "tool_result" in text:
         return turn([{"type": "text", "text": "All done. Here is the code:\n```rust\nfn main() {}\n```"}], "end_turn")
     if "make a file" in text:
