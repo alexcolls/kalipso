@@ -40,16 +40,19 @@ A click also focuses a pane. The status line always lists the focused pane's key
 whole last reply. Kalipso captures the mouse, so hold Shift for your terminal's own selection, which
 runs across all panes.
 
-**Ctrl+P** finds a file by fuzzy name, from anywhere except the terminal pane, where it belongs
-to the shell.
+**Ctrl+P** finds a file by fuzzy name and **Alt+F** searches the project's text, from anywhere
+except the terminal pane, where those keys belong to the shell. Search skips gitignored and private
+files.
 
 **Files:** Enter opens, ←/→ fold, `n` new file, `N` new folder, `r` rename, `d` delete,
-`.` show hidden and ignored files, `R` refresh.
+`.` show hidden and ignored files, `R` refresh. In a git repository, `M` marks changed files, `A` new
+ones, and `•` folders with changes inside.
 
 **Editor:** VS Code-style. Ctrl+S save, Ctrl+Z/Y undo/redo, Ctrl+C/X/V clipboard, Ctrl+A select
 all, Ctrl+F find, F3 next match, Ctrl+G go to line, Ctrl+R reload from disk, Shift+motion selects.
 Ctrl+V pastes what you copied in Kalipso; use your terminal's paste (usually Ctrl+Shift+V) for
-text from other programs.
+text from other programs. The gutter marks lines that differ from git's HEAD: green added, yellow
+changed, red for deleted lines.
 
 **Terminal:** every other key goes to the shell. Alt+S enters scroll mode, and the wheel scrolls.
 
@@ -137,7 +140,8 @@ files again. The transcript on screen stays as it was.
 ### What agents can and can't do
 
 - Writing files and running commands shows you the diff or command first and waits for `y`, `n`, or
-  `a` (allow that tool for this chat tab).
+  `a` (allow that tool for this chat tab). For a file change, `v` opens the proposed file in a
+  read-only editor tab with its changes marked, and you can answer from there.
 - File tools stay inside the project, after resolving symlinks.
 - Reading or writing `.env*`, key files, `.git/` and gitignored files always asks, even after `a`.
   `search` skips them.
@@ -153,7 +157,12 @@ anything your user account can. Files and command output can contain instruction
 model (prompt injection), so read commands before you allow them, and be careful with `a` on
 `run_command` in code you don't trust.
 
-Chats aren't saved: they're gone when you quit.
+### Saved chats
+
+Chats are saved once each finishes a turn, and the Alt+T picker offers them under `Resume`. They live
+in `~/.local/share/kalipso/chats/`, one folder per project, readable only by you, and the newest 50
+per project are kept. They hold the full conversation, including any code the agent read, so delete
+them if that matters. An `a` answer isn't saved, so a resumed chat asks again.
 
 ## Tests
 
@@ -174,9 +183,8 @@ OPENROUTER_API_KEY=... KALIPSO_TEST_MODEL=<model> cargo test -- --ignored live_o
 
 ## Not built yet
 
-LSP and go-to-definition, git gutter, editor splits, multi-cursor, project-wide find UI, saved
-chats, custom agents, MCP, a settings UI, in-app API key entry, mouse forwarding to programs in the
-terminal pane, full Markdown rendering, and a Vim mode.
+LSP and go-to-definition, editor splits, multi-cursor, custom agents, MCP, a settings UI, in-app API
+key entry, mouse forwarding to programs in the terminal pane, full Markdown rendering, and a Vim mode.
 
 ## License
 
