@@ -1042,6 +1042,43 @@ mod tests {
         }
     }
 
+    /// Every pane has content, and a popup is open, at every small terminal size.
+    #[test]
+    fn drawing_never_panics_at_any_terminal_size() {
+        let (mut app, dir) = app_in("sizes");
+        fs::write(dir.join("a.txt"), "日本語\n\tindented\n".repeat(50)).unwrap();
+        app.files.refresh();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.chats.create(0, Provider::Claude, "m".to_owned());
+        app.chats.tabs[0].input = Buffer::from_text(&"long input line\n".repeat(20));
+
+        let draw_all = |app: &mut App| {
+            for width in 1..50 {
+                for height in 1..16 {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal.draw(|frame| app.draw(frame)).unwrap();
+                }
+            }
+        };
+        draw_all(&mut app);
+        for pane in ['1', '2', '3', '4'] {
+            press(&mut app, KeyCode::Char(pane), KeyModifiers::ALT);
+            press(&mut app, KeyCode::Char('z'), KeyModifiers::ALT);
+            let mut terminal = Terminal::new(TestBackend::new(3, 3)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            press(&mut app, KeyCode::Char('z'), KeyModifiers::ALT);
+        }
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::ALT);
+        type_text(&mut app, "n");
+        draw_all(&mut app);
+        app.modal = Some(Modal::pick("Pick", vec!["a very long item ".repeat(20); 40], Then::ChatAgent));
+        draw_all(&mut app);
+        app.modal = Some(Modal::Confirm { title: "A long question ".repeat(20), then: Then::Quit });
+        draw_all(&mut app);
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn click_focuses_the_pane_under_the_mouse() {
         let mut app = test_app();
