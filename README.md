@@ -112,7 +112,7 @@ each provider's own format. `/model` switches within a provider; otherwise open 
 |---|---|---|
 | Code | all | Implement changes |
 | Test | all | Write and run tests, fix failures |
-| Review | read + `run_command` | Review diffs and code; can't write files |
+| Review | read + `run_command` | Review diffs and code; no file-editing tools |
 | Commit | read + `run_command` | Inspect the diff, write the message, commit |
 | Design | read + `write_file` | Design docs and ASCII mockups; can't run commands |
 
@@ -125,6 +125,10 @@ each provider's own format. `/model` switches within a provider; otherwise open 
   `search` skips them.
 - Commands run with the API key variables removed, a 120-second timeout and capped output.
 - After 50 model turns on one message, the agent pauses and waits for you, to limit cost.
+
+An agent's tool list only limits which tools it's offered. Review and Commit have no file-editing
+tools, but a command you approve can still change files. Instructions such as Commit's "never
+force-push" are guidance to the model, and nothing enforces them.
 
 **There is no sandbox, so approval is the real security boundary.** An approved command can do
 anything your user account can. Files and command output can contain instructions aimed at the

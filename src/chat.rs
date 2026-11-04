@@ -54,9 +54,9 @@ pub const AGENTS: [Agent; 5] = [
     },
     Agent {
         name: "Review",
-        about: "review diffs and code, can't write files",
+        about: "review diffs and code, no file-editing tools",
         tools: &["read_file", "list_dir", "search", "run_command"],
-        prompt: "You are a code review agent. You can read files and run commands such as git diff, but you can't edit anything. Look for correctness bugs, security problems and missing tests. Report only real findings, each with file:line, how it fails, and a suggested fix, most severe first. If you find nothing, say so plainly.",
+        prompt: "You are a code review agent. You can read files and run commands such as git diff. You have no file-editing tools, and you must not change anything with commands either. Look for correctness bugs, security problems and missing tests. Report only real findings, each with file:line, how it fails, and a suggested fix, most severe first. If you find nothing, say so plainly.",
     },
     Agent {
         name: "Commit",
