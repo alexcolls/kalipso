@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub const HINTS: &str = "Enter open  Ctrl+P find  ←→ fold  n file  N folder  r rename  d delete  . hidden  R refresh";
+pub const HINTS: &str = "Enter open  Ctrl+P find  Alt+F search  ←→ fold  n file  N folder  r rename  d delete  . hidden  R refresh";
 
 const MAX_LISTED_FILES: usize = 100_000;
 

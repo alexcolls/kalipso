@@ -28,7 +28,7 @@ const CHECKPOINT_EVERY: usize = 256;
 const MAX_HIGHLIGHT_LINE: usize = 4096;
 pub const SELECTION_BG: Color = Color::Rgb(60, 70, 95);
 
-pub const HINTS: &str = "Ctrl+S save  Ctrl+P open  Ctrl+Z/Y undo  Ctrl+F find  F3 next  Ctrl+G line  Alt+T new  Alt+W close";
+pub const HINTS: &str = "Ctrl+S save  Ctrl+P open  Alt+F search  Ctrl+Z/Y undo  Ctrl+F find  F3 next  Ctrl+G line  Alt+T new  Alt+W close";
 
 /// A position in a buffer. `col` is a byte offset, always on a char boundary.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]

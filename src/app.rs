@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::SyncSender;
+use std::thread;
 
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -23,6 +24,7 @@ use crate::tools;
 
 /// The most selected text sent along with a chat message.
 const MAX_CONTEXT_BYTES: usize = 32 * 1024;
+const MAX_SEARCH_HITS: usize = 1000;
 
 /// Everything the main thread reacts to. Worker threads only ever send these.
 pub enum Event {
@@ -32,6 +34,7 @@ pub enum Event {
     PtyExit { id: u64 },
     Chat { chat: u64, generation: u64, event: ChatEvent },
     Models { provider: Provider, purpose: ModelsFor, result: Result<Vec<ModelInfo>, String> },
+    SearchDone { query: String, hits: Vec<tools::SearchHit>, more: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -185,6 +188,8 @@ pub enum Then {
     ChatModel(usize, Provider),
     SwitchModel(u64),
     OpenFile,
+    SearchProject,
+    OpenMatch(String),
 }
 
 pub enum Modal {
@@ -303,6 +308,7 @@ fn read_selection(buffer: &mut ScreenBuffer, rect: Rect, a: (u16, u16), b: (u16,
 
 pub struct App {
     pub root: PathBuf,
+    tx: SyncSender<Event>,
     pub focus: Focus,
     /// Last focused of Editor/Terminal, see [`neighbor`].
     pub middle: Focus,
@@ -319,6 +325,7 @@ pub struct App {
     pub message: Option<String>,
     pub clipboard: String,
     selection: Option<TextSelection>,
+    last_search: String,
 }
 
 impl App {
@@ -327,8 +334,9 @@ impl App {
             files: FileTree::new(root.clone()),
             editor: Editor::default(),
             terminals: Terminals::new(root.clone(), tx.clone()),
-            chats: Chats::new(root.clone(), tx),
+            chats: Chats::new(root.clone(), tx.clone()),
             root,
+            tx,
             focus: Focus::Files,
             middle: Focus::Editor,
             zoom: false,
@@ -339,6 +347,36 @@ impl App {
             message: None,
             clipboard: String::new(),
             selection: None,
+            last_search: String::new(),
+        }
+    }
+
+    fn search_prompt(&mut self) {
+        let selected = self.editor.doc().and_then(|doc| doc.buf.selected_text()).filter(|text| !text.contains('\n'));
+        let query = selected.unwrap_or_else(|| self.last_search.clone());
+        self.modal = Some(Modal::input("Search project", &query, Then::SearchProject));
+    }
+
+    fn start_search(&mut self, query: &str) {
+        self.last_search = query.to_owned();
+        let Some(pattern) = editor::literal_regex(query) else { return };
+        self.message = Some(format!("Searching for {query}..."));
+        let (tx, root, query) = (self.tx.clone(), self.root.clone(), query.to_owned());
+        thread::spawn(move || {
+            let (hits, more) = tools::search_files(&root, &root, &pattern, MAX_SEARCH_HITS);
+            let _ = tx.send(Event::SearchDone { query, hits, more });
+        });
+    }
+
+    fn on_search_done(&mut self, query: String, hits: Vec<tools::SearchHit>, more: bool) {
+        self.needs_draw = true;
+        self.message = None;
+        if hits.is_empty() {
+            self.message = Some(format!("No matches for {query}."));
+        } else if self.modal.is_none() {
+            let title = if more { format!("First {} matches for {query}", hits.len()) } else { format!("{} match{} for {query}", hits.len(), if hits.len() == 1 { "" } else { "es" }) };
+            let items = hits.iter().map(|hit| format!("{}:{}: {}", hit.path, hit.line, hit.text.trim().replace('\t', " "))).collect();
+            self.modal = Some(Modal::pick(title, items, Then::OpenMatch(query)));
         }
     }
 
@@ -354,6 +392,7 @@ impl App {
                 let docs = self.editor.check_disk();
                 self.needs_draw |= tree || docs;
             }
+            Event::SearchDone { query, hits, more } => self.on_search_done(query, hits, more),
             Event::PtyOutput { id, bytes } => {
                 self.terminals.on_output(id, &bytes);
                 self.needs_draw = true;
@@ -559,6 +598,8 @@ impl App {
             KeyCode::Char('3') => self.set_focus(Focus::Editor),
             KeyCode::Char('4') => self.set_focus(Focus::Chat),
             KeyCode::Char('z') => self.zoom = !self.zoom,
+            // Not in the terminal pane, where Alt+F belongs to the shell.
+            KeyCode::Char('f') if self.focus != Focus::Terminal => self.search_prompt(),
             KeyCode::Char('t') => self.new_tab(),
             KeyCode::Char('w') => self.close_tab(),
             KeyCode::PageUp => self.cycle_tab(-1),
@@ -749,6 +790,23 @@ impl App {
                 let path = self.root.join(value);
                 self.files.reveal(&path);
                 self.open_file(&path);
+            }
+            Then::SearchProject => {
+                if !value.trim().is_empty() {
+                    self.start_search(value);
+                }
+            }
+            Then::OpenMatch(query) => {
+                let pattern = regex::Regex::new(r"^(.*?):(\d+): ").map_err(|err| err.to_string())?;
+                let found = pattern.captures(value).ok_or("That match can't be opened")?;
+                let line = found[2].parse().map_err(|_| "Bad line number")?;
+                let path = self.root.join(&found[1]);
+                self.files.reveal(&path);
+                self.open_file(&path);
+                self.editor.find_query = query;
+                self.editor.go_to_line(line);
+                let cmd = self.editor.find_next(true);
+                self.run_editor_cmd(cmd);
             }
             Then::CloseDoc(index) => self.editor.close(index),
             Then::CloseChat(id) => self.chats.close(id),
@@ -1242,6 +1300,45 @@ mod tests {
         for title in ["1 Files", "2 Terminal", "3 Editor", "4 Chat"] {
             assert!(text.contains(title), "missing {title}");
         }
+    }
+
+    #[test]
+    fn project_search_opens_the_match_with_it_selected() {
+        let (mut app, dir) = app_in("search");
+        let (tx, rx) = mpsc::sync_channel(8);
+        app.tx = tx;
+        fs::create_dir(dir.join("src")).unwrap();
+        fs::write(dir.join("src/a.rs"), "first\nthe needle: here\n").unwrap();
+        fs::write(dir.join(".gitignore"), "skipped.txt\n").unwrap();
+        fs::write(dir.join("skipped.txt"), "needle").unwrap();
+        fs::write(dir.join(".env"), "needle=secret").unwrap();
+        app.files.refresh();
+
+        press(&mut app, KeyCode::Char('2'), KeyModifiers::ALT);
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::ALT);
+        assert!(app.modal.is_none(), "the shell uses Alt+F");
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::ALT);
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::ALT);
+        type_text(&mut app, "needle");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.handle(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap());
+
+        let Some(Modal::Pick { items, title, .. }) = &app.modal else { panic!("expected results") };
+        assert_eq!(title, "1 match for needle");
+        assert_eq!(items, &["src/a.rs:2: the needle: here"], "ignored and private files stay out");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.editor.doc().unwrap().buf.selected_text().as_deref(), Some("needle"));
+        assert_eq!(app.editor.doc().unwrap().buf.selection().unwrap().0.line, 1);
+
+        type_text(&mut app, "x");
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::ALT);
+        type_text(&mut app, "zzzzz");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.handle(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap());
+        assert!(app.modal.is_none());
+        assert_eq!(app.message.as_deref(), Some("No matches for zzzzz."));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
