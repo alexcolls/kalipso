@@ -967,7 +967,11 @@ impl Editor {
     }
 
     pub fn check_disk(&mut self) -> bool {
-        self.docs.iter_mut().fold(false, |changed, doc| doc.check_disk() || changed)
+        let mut changed = false;
+        for doc in &mut self.docs {
+            changed |= doc.check_disk(); // Every doc must be checked, so no short-circuiting.
+        }
+        changed
     }
 
     /// Keeps open buffers pointing at the right file after a rename in the file tree.
