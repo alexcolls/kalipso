@@ -36,6 +36,14 @@ gone() {
     done
     fail "$name (still showing: $text)"
 }
+saved() {
+    local name=$1 text=$2 i
+    for i in $(seq 50); do
+        grep -qF -- "$text" "$CONFIG/kalipso/config.json" 2>/dev/null && { pass "$name"; return; }
+        sleep 0.1
+    done
+    fail "$name (not in config.json: $text)"
+}
 # Column and row of some text on screen, counting from 1. Python, because mawk's index()
 # counts bytes and the borders are multi-byte.
 locate() {
@@ -207,7 +215,8 @@ cursor_on "F12 finds the definition from past an emoji, and lands on its name" "
 expect "problems appear next to their line" "BAD line   mock problem: BAD"
 key S-F12; cursor_on "Shift+F12 comes back to the call" "target();" 1
 key F8; expect "F8 jumps to a problem and describes it" "1 problem: mock problem: BAD"
-if grep -qF 'kalipso' "$CONFIG/kalipso/config.json" && grep -qF 'rust-analyzer' "$CONFIG/kalipso/config.json"; then pass "the answer is saved"; else fail "the answer is saved"; fi
+saved "the answer is saved for this project" "$(cd "$WORK" && pwd -P)"
+saved "the answer names the server" '"rust-analyzer"'
 
 key M-f; expect "Alt+F asks what to search for" "Search project"
 key -l 'needle_in'; key Enter
@@ -329,7 +338,7 @@ key -l '/model'; key Enter
 expect "/model lists the provider's models" "Claude model"
 key -l 'sonnet'; key Enter
 expect "/model switches the model" "claude-sonnet-mock"
-if grep -qF 'claude-sonnet-mock' "$CONFIG/kalipso/config.json" 2>/dev/null; then pass "the model choice is saved"; else fail "the model choice is saved"; fi
+saved "the model choice is saved" 'claude-sonnet-mock'
 key -l 'hello there'; key Enter
 expect "a second message gets a reply" "Hello from the mock."
 
