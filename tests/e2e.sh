@@ -373,14 +373,22 @@ expect "a resumed chat keeps working" "Hello from the mock."
 # --- end of scenario: quitting must hand back a working terminal.
 "${T[@]}" set-option -t kalipso remain-on-exit on >/dev/null
 key C-q
+# Waits for the exit status itself, in case tmux reports it later than pane_dead.
+early=0
 for i in $(seq 50); do
-    [ "$("${T[@]}" display-message -p -t kalipso '#{pane_dead}')" = 1 ] && break
+    state=$("${T[@]}" display-message -p -t kalipso '#{pane_dead} #{pane_dead_status}#{pane_dead_signal}')
+    case "$state" in
+        "1 ") early=1 ;;
+        "1 "*) break ;;
+    esac
     sleep 0.1
 done
+[ "$early" = 1 ] && echo "      (tmux reported the pane dead before its exit status)"
 if [ "$("${T[@]}" display-message -p -t kalipso '#{pane_dead_status}')" = 0 ]; then
     pass "Ctrl+Q exits cleanly"
 else
-    fail "Ctrl+Q exits cleanly"
+    fail "Ctrl+Q exits cleanly ($("${T[@]}" display-message -p -t kalipso 'dead=#{pane_dead} status=#{pane_dead_status} signal=#{pane_dead_signal}'))"
+    ps -o pid,stat,wchan:24,etimes,args -p "$("${T[@]}" display-message -p -t kalipso '#{pane_pid}')" | sed 's/^/      | /'
 fi
 
 server=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["pid"])' "$CONFIG/lsp.log")
