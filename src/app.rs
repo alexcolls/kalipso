@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::chat::{AGENTS, ChatCmd, ChatEvent, Chats, EditorContext, ModelsFor};
+use crate::chat::{AGENTS, ChatCmd, ChatEvent, Chats, EditorContext, ModelsFor, Resumable};
 use crate::editor::{self, Buffer, Editor, EditorCmd, SELECTION_BG, col_to_display, render_line};
 use crate::files::{self, FileTree, FilesCmd, safe_join};
 use crate::git;
@@ -187,7 +187,7 @@ pub enum Then {
     GoToLine,
     Quit,
     CloseChat(u64),
-    ChatAgent,
+    ChatAgent(Vec<Resumable>),
     ChatProvider(usize),
     ChatModel(usize, Provider),
     SwitchModel(u64),
@@ -570,8 +570,10 @@ impl App {
     }
 
     fn new_chat(&mut self) {
-        let items = AGENTS.iter().map(|agent| format!("{}: {}", agent.name, agent.about)).collect();
-        self.modal = Some(Modal::pick("New chat: pick an agent", items, Then::ChatAgent));
+        let saved = self.chats.resumable();
+        let agents = AGENTS.iter().map(|agent| format!("{}: {}", agent.name, agent.about));
+        let items = agents.chain(saved.iter().map(|chat| chat.label.clone())).collect();
+        self.modal = Some(Modal::pick("New chat: pick an agent", items, Then::ChatAgent(saved)));
     }
 
     fn on_models(&mut self, provider: Provider, purpose: ModelsFor, result: Result<Vec<ModelInfo>, String>) {
@@ -604,11 +606,15 @@ impl App {
         self.modal = Some(Modal::pick(format!("{} model", provider.name()), items, then));
     }
 
-    fn create_chat(&mut self, agent: usize, provider: Provider, model: String) {
+    fn load_model_limits(&self, provider: Provider) {
         // These two publish model limits. OpenAI's and Grok's lists don't.
         if matches!(provider, Provider::Claude | Provider::OpenRouter) {
             self.chats.load_models(provider, ModelsFor::Features);
         }
+    }
+
+    fn create_chat(&mut self, agent: usize, provider: Provider, model: String) {
+        self.load_model_limits(provider);
         self.chats.create(agent, provider, model);
         self.set_focus(Focus::Chat);
     }
@@ -874,7 +880,13 @@ impl App {
             }
             Then::CloseDoc(index) => self.editor.close(index),
             Then::CloseChat(id) => self.chats.close(id),
-            Then::ChatAgent => {
+            Then::ChatAgent(saved) => {
+                if let Some(chat) = saved.iter().find(|chat| chat.label == value) {
+                    let provider = self.chats.resume(&chat.path)?;
+                    self.load_model_limits(provider);
+                    self.set_focus(Focus::Chat);
+                    return Ok(());
+                }
                 let agent = AGENTS.iter().position(|agent| value.starts_with(agent.name)).ok_or("Unknown agent")?;
                 let ready: Vec<Provider> = Provider::ALL.into_iter().filter(|p| p.api_key().is_some()).collect();
                 match ready.as_slice() {
@@ -1692,7 +1704,7 @@ mod tests {
         press(&mut app, KeyCode::Char('1'), KeyModifiers::ALT);
         type_text(&mut app, "n");
         draw_all(&mut app);
-        app.modal = Some(Modal::pick("Pick", vec!["a very long item ".repeat(20); 40], Then::ChatAgent));
+        app.modal = Some(Modal::pick("Pick", vec!["a very long item ".repeat(20); 40], Then::ChatAgent(Vec::new())));
         draw_all(&mut app);
         app.modal = Some(Modal::Confirm { title: "A long question ".repeat(20), then: Then::Quit });
         draw_all(&mut app);
