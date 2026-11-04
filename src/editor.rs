@@ -19,6 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{TabHits, tab_line};
+use crate::git::{Mark, line_marks};
 
 const TAB_WIDTH: usize = 4;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -829,6 +830,11 @@ pub struct Doc {
     disk: Option<Stamp>,
     pub conflict: Option<Conflict>,
     highlight: Highlight,
+    /// This file's lines at git HEAD, if it has any, and the HEAD they came from.
+    base: Option<Vec<String>>,
+    base_head: Option<String>,
+    marks: Vec<Mark>,
+    marks_stale: bool,
 }
 
 impl Doc {
@@ -845,7 +851,21 @@ impl Doc {
             follow_cursor: true,
             disk,
             conflict: None,
+            base: None,
+            base_head: None,
+            marks: Vec::new(),
+            marks_stale: false,
         }
+    }
+
+    /// Sets the text the gutter compares against.
+    fn set_base(&mut self, text: Option<&str>, head: Option<String>) {
+        self.base = text.map(|text| {
+            let text = if self.crlf { text.replace("\r\n", "\n") } else { text.to_owned() };
+            text.split('\n').map(str::to_owned).collect()
+        });
+        self.base_head = head;
+        self.marks_stale = true;
     }
 
     pub fn title(&self) -> String {
@@ -975,6 +995,19 @@ impl Editor {
             changed |= doc.check_disk(); // Every doc must be checked, so no short-circuiting.
         }
         changed
+    }
+
+    /// Each open file with the HEAD its gutter is based on.
+    pub fn known_bases(&self) -> Vec<(PathBuf, Option<String>)> {
+        self.docs.iter().filter_map(|doc| Some((doc.path.clone()?, doc.base_head.clone()))).collect()
+    }
+
+    pub fn apply_bases(&mut self, head: &Option<String>, bases: &[(PathBuf, Option<String>)]) {
+        for (path, text) in bases {
+            for doc in self.docs.iter_mut().filter(|doc| doc.path.as_ref() == Some(path)) {
+                doc.set_base(text.as_deref(), head.clone());
+            }
+        }
     }
 
     /// Keeps open buffers pointing at the right file after a rename in the file tree.
@@ -1139,6 +1172,10 @@ impl Editor {
 
         if let Some(line) = doc.buf.take_changed() {
             doc.highlight.invalidate(line);
+            doc.marks_stale = true;
+        }
+        if std::mem::take(&mut doc.marks_stale) {
+            doc.marks = doc.base.as_ref().map_or_else(Vec::new, |base| line_marks(base, doc.buf.lines()));
         }
         let last = (doc.top + height).min(count);
         doc.highlight.prepare(doc.buf.lines(), doc.top, last);
@@ -1158,7 +1195,14 @@ impl Editor {
             let runs = doc.highlight.cache.get(&index).map_or(&[][..], Vec::as_slice);
             let mut row = render_line(text, runs, selected, doc.left, width);
             let number_style = if index == cursor.line { Style::new().fg(Color::Gray) } else { Style::new().fg(Color::DarkGray) };
-            row.spans.insert(0, Span::styled(format!("{:>w$} ", index + 1, w = gutter as usize - 1), number_style));
+            let (sign, sign_color) = match doc.marks.get(index).copied().unwrap_or_default() {
+                Mark::None => (" ", Color::Reset),
+                Mark::Added => ("▎", Color::Green),
+                Mark::Changed => ("▎", Color::Yellow),
+                Mark::Deleted => ("▁", Color::Red),
+            };
+            row.spans.insert(0, Span::styled(sign, Style::new().fg(sign_color)));
+            row.spans.insert(0, Span::styled(format!("{:>w$}", index + 1, w = gutter as usize - 1), number_style));
             rows.push(row);
         }
         frame.render_widget(Paragraph::new(rows), body);

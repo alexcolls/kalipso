@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
@@ -10,6 +10,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+
+use crate::git::Change;
 
 pub const HINTS: &str = "Enter open  Ctrl+P find  Alt+F search  ←→ fold  n file  N folder  r rename  d delete  . hidden  R refresh";
 
@@ -41,6 +43,9 @@ pub struct FileTree {
     /// Modification times of listed folders, to notice outside changes.
     seen: HashMap<PathBuf, Option<SystemTime>>,
     area: Rect,
+    changes: HashMap<PathBuf, Change>,
+    /// Folders with a changed file somewhere inside.
+    changed_dirs: HashSet<PathBuf>,
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
@@ -120,6 +125,8 @@ impl FileTree {
             expanded: BTreeSet::new(),
             seen: HashMap::new(),
             area: Rect::default(),
+            changes: HashMap::new(),
+            changed_dirs: HashSet::new(),
         };
         tree.refresh();
         tree
@@ -156,6 +163,19 @@ impl FileTree {
             self.refresh();
         }
         changed
+    }
+
+    /// Updates the git marks. Returns whether anything changed.
+    pub fn set_changes(&mut self, changes: HashMap<PathBuf, Change>) -> bool {
+        if changes == self.changes {
+            return false;
+        }
+        self.changed_dirs = changes
+            .keys()
+            .flat_map(|path| path.ancestors().skip(1).take_while(|dir| dir.starts_with(&self.root) && *dir != self.root).map(Path::to_path_buf))
+            .collect();
+        self.changes = changes;
+        true
     }
 
     /// Selects a path, expanding the folders above it.
@@ -277,9 +297,15 @@ impl FileTree {
                     (true, false) => "▸ ",
                     _ => "  ",
                 };
-                let base = if row.is_dir { Style::new().fg(Color::Blue) } else { Style::new() };
+                let (suffix, color) = match self.changes.get(&row.path) {
+                    Some(Change::Modified) => (" M", Some(Color::Yellow)),
+                    Some(Change::Added) => (" A", Some(Color::Green)),
+                    None if self.changed_dirs.contains(&row.path) => (" •", Some(Color::Yellow)),
+                    None => ("", None),
+                };
+                let base = Style::new().fg(color.unwrap_or(if row.is_dir { Color::Blue } else { Color::Reset }));
                 let style = if index == self.selected { selected_style } else { base };
-                Line::from(Span::styled(format!("{}{marker}{}", "  ".repeat(row.depth), row.name), style))
+                Line::from(Span::styled(format!("{}{marker}{}{suffix}", "  ".repeat(row.depth), row.name), style))
             })
             .collect();
         frame.render_widget(Paragraph::new(rows), area);

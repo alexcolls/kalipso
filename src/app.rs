@@ -18,6 +18,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::chat::{AGENTS, ChatCmd, ChatEvent, Chats, EditorContext, ModelsFor};
 use crate::editor::{self, Buffer, Editor, EditorCmd, SELECTION_BG, col_to_display, render_line};
 use crate::files::{self, FileTree, FilesCmd, safe_join};
+use crate::git;
 use crate::llm::{ModelInfo, Provider};
 use crate::term::Terminals;
 use crate::tools;
@@ -25,6 +26,8 @@ use crate::tools;
 /// The most selected text sent along with a chat message.
 const MAX_CONTEXT_BYTES: usize = 32 * 1024;
 const MAX_SEARCH_HITS: usize = 1000;
+/// Seconds between checks of git's state.
+const GIT_CHECK_EVERY: u32 = 2;
 
 /// Everything the main thread reacts to. Worker threads only ever send these.
 pub enum Event {
@@ -34,6 +37,7 @@ pub enum Event {
     PtyExit { id: u64 },
     Chat { chat: u64, generation: u64, event: ChatEvent },
     Models { provider: Provider, purpose: ModelsFor, result: Result<Vec<ModelInfo>, String> },
+    Git(Option<git::Snapshot>),
     SearchDone { query: String, hits: Vec<tools::SearchHit>, more: bool },
 }
 
@@ -326,6 +330,8 @@ pub struct App {
     pub clipboard: String,
     selection: Option<TextSelection>,
     last_search: String,
+    ticks: u32,
+    git_running: bool,
 }
 
 impl App {
@@ -348,7 +354,32 @@ impl App {
             clipboard: String::new(),
             selection: None,
             last_search: String::new(),
+            ticks: 0,
+            git_running: false,
         }
+    }
+
+    /// Checks git's state on a worker thread, one check at a time.
+    fn check_git(&mut self) {
+        if self.git_running {
+            return;
+        }
+        self.git_running = true;
+        let (tx, root, known) = (self.tx.clone(), self.root.clone(), self.editor.known_bases());
+        thread::spawn(move || {
+            let _ = tx.send(Event::Git(git::snapshot(&root, &known)));
+        });
+    }
+
+    fn on_git(&mut self, snapshot: Option<git::Snapshot>) {
+        self.git_running = false;
+        let Some(snapshot) = snapshot else {
+            self.needs_draw |= self.files.set_changes(Default::default());
+            return;
+        };
+        self.needs_draw |= !snapshot.bases.is_empty();
+        self.editor.apply_bases(&snapshot.head, &snapshot.bases);
+        self.needs_draw |= self.files.set_changes(snapshot.changes);
     }
 
     fn search_prompt(&mut self) {
@@ -391,7 +422,12 @@ impl App {
                 let tree = self.files.check_disk();
                 let docs = self.editor.check_disk();
                 self.needs_draw |= tree || docs;
+                if self.ticks.is_multiple_of(GIT_CHECK_EVERY) {
+                    self.check_git();
+                }
+                self.ticks = self.ticks.wrapping_add(1);
             }
+            Event::Git(snapshot) => self.on_git(snapshot),
             Event::SearchDone { query, hits, more } => self.on_search_done(query, hits, more),
             Event::PtyOutput { id, bytes } => {
                 self.terminals.on_output(id, &bytes);
@@ -1338,6 +1374,42 @@ mod tests {
         app.handle(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap());
         assert!(app.modal.is_none());
         assert_eq!(app.message.as_deref(), Some("No matches for zzzzz."));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn git_state_reaches_the_tree_and_the_gutter() {
+        let (mut app, dir) = app_in("gitmarks");
+        fs::create_dir(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/a.txt"), "one\nnew line\nthree\n").unwrap();
+        fs::write(dir.join("b.txt"), "b\n").unwrap();
+        app.files.refresh();
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.editor.known_bases(), [(dir.join("sub/a.txt"), None)]);
+
+        let changes = [(dir.join("sub/a.txt"), git::Change::Modified), (dir.join("b.txt"), git::Change::Added)].into_iter().collect();
+        let snapshot = git::Snapshot { head: Some("abc".to_owned()), changes, bases: vec![(dir.join("sub/a.txt"), Some("one\ntwo\nthree\n".to_owned()))] };
+        app.handle(Event::Git(Some(snapshot)));
+        assert!(!app.git_running);
+        assert_eq!(app.editor.known_bases(), [(dir.join("sub/a.txt"), Some("abc".to_owned()))], "not reloaded until HEAD moves");
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let rows: Vec<String> = (0..30).map(|y| (0..120).map(|x| terminal.backend().buffer()[(x, y)].symbol().to_owned()).collect()).collect();
+        let row_with = |text: &str| rows.iter().find(|row| row.contains(text)).unwrap_or_else(|| panic!("{text}: {rows:#?}"));
+        assert!(row_with("sub").contains("sub •"), "folders show changes inside");
+        assert!(rows.iter().any(|row| row.contains("a.txt M")), "{rows:#?}");
+        assert!(rows.iter().any(|row| row.contains("b.txt A")), "{rows:#?}");
+        assert!(row_with("new line").contains("2▎new line"), "the changed line is marked");
+        assert!(row_with("one").contains("1 one"), "unchanged lines aren't");
+
+        app.handle(Event::Git(None));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        assert!(!text.contains("a.txt M"), "marks clear if the repository goes away");
+        drop(app);
         fs::remove_dir_all(&dir).unwrap();
     }
 

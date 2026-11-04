@@ -2,6 +2,7 @@ mod app;
 mod chat;
 mod editor;
 mod files;
+mod git;
 mod llm;
 mod term;
 mod tools;
