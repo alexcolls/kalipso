@@ -125,7 +125,9 @@ pub enum LspEvent {
         character: usize,
         utf8: bool,
     },
-    NoDefinition,
+    /// Nothing found. The text says what the server is still doing, if anything: while a
+    /// server loads a project it answers "nothing" even for symbols that exist.
+    NoDefinition(Option<String>),
     Problem(String),
 }
 
@@ -295,6 +297,8 @@ struct Client {
     queued: Vec<Value>,
     utf8: bool,
     open: HashMap<PathBuf, Opened>,
+    /// Long-running work the server has reported and not finished, by its token.
+    working_on: HashMap<String, String>,
 }
 
 impl Drop for Client {
@@ -377,6 +381,21 @@ impl Client {
             (Some("textDocument/publishDiagnostics"), None) => {
                 parse_diagnostics(&message["params"]).unwrap_or(LspEvent::None)
             }
+            (Some("$/progress"), None) => {
+                let params = &message["params"];
+                let token = params["token"].to_string();
+                match params["value"]["kind"].as_str() {
+                    Some("begin") => {
+                        let title = params["value"]["title"].as_str().unwrap_or("working");
+                        self.working_on.insert(token, title.to_owned());
+                    }
+                    Some("end") => {
+                        self.working_on.remove(&token);
+                    }
+                    _ => {}
+                }
+                LspEvent::None
+            }
             (Some(_), None) => LspEvent::None,
             (None, Some(id)) => self.on_response(id.as_i64().unwrap_or(-1), &message),
             (None, None) => LspEvent::None,
@@ -410,7 +429,7 @@ impl Client {
                         character,
                         utf8: self.utf8,
                     },
-                    None => LspEvent::NoDefinition,
+                    None => LspEvent::NoDefinition(self.working_on.values().next().cloned()),
                 }
             }
         }
@@ -543,6 +562,7 @@ impl Servers {
             queued: Vec::new(),
             utf8: false,
             open: HashMap::new(),
+            working_on: HashMap::new(),
         };
         client.pending.insert(0, Pending::Initialize);
         client.write(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
@@ -553,6 +573,7 @@ impl Servers {
                 "general": {"positionEncodings": ["utf-8", "utf-16"]},
                 "textDocument": {"publishDiagnostics": {}, "definition": {"linkSupport": true}, "synchronization": {"didSave": true}},
                 "workspace": {"configuration": true},
+                "window": {"workDoneProgress": true},
             },
         }}));
         self.failed.remove(&index);

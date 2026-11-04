@@ -14,6 +14,7 @@ import sys
 log_path = os.environ.get("MOCK_LSP_LOG")
 docs = {}
 saved = set()
+loading = False
 
 
 def log(entry):
@@ -43,7 +44,18 @@ def receive():
     return json.loads(sys.stdin.buffer.read(length))
 
 
+def report_progress(uri):
+    """Work is under way while any open file contains STILL_LOADING, like a server indexing."""
+    global loading
+    wanted = any("STILL_LOADING" in text for text in docs.values())
+    if wanted != loading:
+        kind = {"kind": "begin", "title": "Indexing"} if wanted else {"kind": "end"}
+        send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": kind}})
+        loading = wanted
+
+
 def publish(uri):
+    report_progress(uri)
     problems = []
     for number, line in enumerate(docs[uri].split("\n")):
         for word, severity in (("BAD", 1), ("WARN", 2)):
