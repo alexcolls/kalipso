@@ -206,8 +206,10 @@ key M-PPage; expect "Alt+PgUp switches back" "after=2"
 key -l 'seq 1 3000'; key Enter
 expect "output flood finishes" "3000"
 key M-s; expect "Alt+S shows scroll mode" "SCROLL MODE"
-key PPage; expect "scroll mode reads scrollback" "2990"
+key PPage; expect "scroll mode reads scrollback" "2980"
+gone "scrolling moves away from the end" "3000"
 key Escape; gone "Esc leaves scroll mode" "SCROLL MODE"
+expect "Esc returns to the live screen" "3000"
 # Two separate commands, so "abcdef" can only come from vim drawing, not the typed command line.
 key -l 'vim -u NONE -c "set noswapfile" -c "normal iabc" -c "normal adef" scratch.txt'; key Enter
 expect "full-screen programs render" "abcdef"
