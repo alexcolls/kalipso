@@ -46,6 +46,17 @@ for row, line in enumerate(sys.stdin, 1):
         print(col + 1, row)
         break' "$1"
 }
+# Waits for the terminal's cursor to be on some text. `extra` is for wide characters before
+# it on the line, which take two columns but count as one here.
+cursor_on() {
+    local name=$1 text=$2 extra=${3:-0} i col row
+    for i in $(seq 50); do
+        read -r col row < <(locate "$text")
+        [ "$("${T[@]}" display-message -p -t kalipso '#{cursor_x} #{cursor_y}')" = "$((col - 1 + extra)) $((row - 1))" ] && { pass "$name"; return; }
+        sleep 0.1
+    done
+    fail "$name (cursor at $("${T[@]}" display-message -p -t kalipso '#{cursor_x} #{cursor_y}'), text at $col $row)"
+}
 # Drags the mouse over `length` columns starting at some text, using real SGR mouse input.
 drag_over() {
     local col row end
@@ -81,14 +92,21 @@ printf 'inner text here\n' > "$WORK/sub/nested.txt"
 printf 'first\nneedle_in_file();\n' > "$WORK/sub/searchable.txt"
 printf 'ignored.txt\n' > "$WORK/.gitignore"
 printf 'secret\n' > "$WORK/ignored.txt"
+printf 'fn target() {}\nfn main() { let s = "😀"; target(); }\nBAD line\n' > "$WORK/zcode.rs"
 git -C "$WORK" init -q
 git -C "$WORK" add -A
 git -C "$WORK" -c user.name=t -c user.email=t@example.com commit -qm first
+
+# A fake language server, found on PATH under the name of a real one.
+mkdir "$CONFIG/bin"
+printf '#!/bin/sh\nexec python3 "%s/tests/mock_lsp.py"\n' "$PWD" > "$CONFIG/bin/rust-analyzer"
+chmod +x "$CONFIG/bin/rust-analyzer"
 
 # `env`, because tmux overwrites SHELL in new panes. Plain sh keeps results independent of
 # anyone's shell config. Only Claude has a key, pointed at the mock, and the real config is
 # left alone.
 "${T[@]}" new-session -d -s kalipso -x 140 -y 45 -c "$WORK" env SHELL=/bin/sh \
+    PATH="$CONFIG/bin:$PATH" MOCK_LSP_LOG="$CONFIG/lsp.log" \
     ANTHROPIC_API_KEY=e2e-test-key ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$CONFIG/port")/v1" \
     XDG_CONFIG_HOME="$CONFIG" XDG_DATA_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= "$BIN"
 "${T[@]}" set-option -s set-clipboard on
@@ -169,6 +187,27 @@ key BSpace; key BSpace; key BSpace; key BSpace
 key -l 'nstd'; key Enter
 focus "the picker opens the fuzzy match in the editor" "3 Editor"
 expect "the matched file's content is shown" "inner text here"
+
+# --- Language server
+key C-p; key -l 'zcode'; key Enter
+expect "a Rust file opens" "fn target() {}"
+sleep 1.5
+if [ -e "$CONFIG/lsp.log" ]; then fail "opening a file doesn't start a server"; else pass "opening a file doesn't start a server"; fi
+key C-g; key -l '2'; key Enter
+key Right; key Right; key Right; key Right; key Right; key Right; key Right; key Right; key Right; key Right
+key Right; key Right; key Right; key Right; key Right; key Right; key Right; key Right; key Right; key Right
+key Right; key Right; key Right; key Right; key Right
+key F12; expect "F12 asks before starting a server" "Start rust-analyzer? It can run code from this project."
+key n; gone "n closes the question" "Start rust-analyzer?"
+sleep 1.5
+if [ -e "$CONFIG/lsp.log" ]; then fail "declining starts nothing"; else pass "declining starts nothing"; fi
+cursor_on "the cursor starts on the call" "target();" 1
+key F12; key y
+cursor_on "F12 finds the definition from past an emoji, and lands on its name" "target() {}"
+expect "problems appear next to their line" "BAD line   mock problem: BAD"
+key S-F12; cursor_on "Shift+F12 comes back to the call" "target();" 1
+key F8; expect "F8 jumps to a problem and describes it" "1 problem: mock problem: BAD"
+if grep -qF 'kalipso' "$CONFIG/kalipso/config.json" && grep -qF 'rust-analyzer' "$CONFIG/kalipso/config.json"; then pass "the answer is saved"; else fail "the answer is saved"; fi
 
 key M-f; expect "Alt+F asks what to search for" "Search project"
 key -l 'needle_in'; key Enter
@@ -343,6 +382,9 @@ if [ "$("${T[@]}" display-message -p -t kalipso '#{pane_dead_status}')" = 0 ]; t
 else
     fail "Ctrl+Q exits cleanly"
 fi
+
+server=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["pid"])' "$CONFIG/lsp.log")
+if [ -d "/proc/$server" ]; then fail "the language server stops with the app"; else pass "the language server stops with the app"; fi
 
 [ "$FAILED" = 0 ] && echo "all e2e checks passed"
 exit "$FAILED"
