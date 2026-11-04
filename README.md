@@ -34,8 +34,14 @@ These work everywhere, including inside the terminal pane:
 | Alt+PgUp / Alt+PgDn | Previous / next tab |
 | Ctrl+Q | Quit |
 
-A click also focuses a pane. Kalipso captures the mouse, so hold Shift to select text with
-your terminal's own selection. The status line always lists the focused pane's keys.
+A click also focuses a pane. The status line always lists the focused pane's keys.
+
+**Copying:** drag in the terminal or chat pane to copy what's on screen, or use `/copy` for the
+whole last reply. Kalipso captures the mouse, so hold Shift for your terminal's own selection, which
+runs across all panes.
+
+**Ctrl+P** finds a file by fuzzy name, from anywhere except the terminal pane, where it belongs
+to the shell.
 
 **Files:** Enter opens, ←/→ fold, `n` new file, `N` new folder, `r` rename, `d` delete,
 `.` show hidden and ignored files, `R` refresh.
@@ -47,8 +53,8 @@ text from other programs.
 
 **Terminal:** every other key goes to the shell. Alt+S enters scroll mode, and the wheel scrolls.
 
-**Chat:** Enter sends, Ctrl+J adds a line, Esc stops the agent, PgUp/PgDn scroll, `/model` switches
-model.
+**Chat:** Enter sends, Ctrl+J adds a line, Esc stops the agent, PgUp/PgDn scroll. `/model` switches
+model, `/compact` summarizes the conversation now, `/copy` copies the last reply.
 
 ### If Alt keys don't reach Kalipso
 
@@ -115,6 +121,18 @@ each provider's own format. `/model` switches within a provider; otherwise open 
 | Review | read + `run_command` | Review diffs and code; no file-editing tools |
 | Commit | read + `run_command` | Inspect the diff, write the message, commit |
 | Design | read + `write_file` | Design docs and ASCII mockups; can't run commands |
+
+Each message also tells the agent which file is open, the cursor line, whether there are unsaved
+changes, and any selected text (up to 32 KB). The transcript shows this under your message, for
+example `with src/main.rs:42, 6 selected lines`. Selections in private files (see below) aren't sent.
+
+### Long chats
+
+Every turn resends the conversation, so at 150,000 input tokens (or 80% of the model's limit, where
+the provider publishes it) Kalipso asks the model to summarize and continues from the summary. It
+also does this once if a provider says the conversation is too long, and `/compact` does it on
+request. The summary is built from the transcript without tool output, so the agent may need to read
+files again. The transcript on screen stays as it was.
 
 ### What agents can and can't do
 
