@@ -682,6 +682,10 @@ impl Parser for ChatParser {
             other if !calls.is_empty() => Stop::Other(other.to_owned()),
             _ => Stop::EndTurn,
         };
+        if self.text.is_empty() && self.calls.is_empty() {
+            // Some providers reject an assistant message with no content on the next request.
+            return Ok(Turn { items: Vec::new(), calls, stop, input_tokens: self.input_tokens, output_tokens: self.output_tokens });
+        }
         let mut item = json!({"role": "assistant", "content": if self.text.is_empty() { Value::Null } else { json!(self.text) }});
         if !self.calls.is_empty() {
             let tool_calls: Vec<Value> = self
@@ -1081,6 +1085,14 @@ mod tests {
         let server = mock(vec![(200, length)]);
         let turn = run(&request(Wire::ChatCompletions, &server.url, "x")).0.unwrap().unwrap();
         assert_eq!(turn.stop, Stop::MaxTokens);
+    }
+
+    #[test]
+    fn an_empty_chat_completions_reply_leaves_nothing_to_replay() {
+        let server = mock(vec![(200, sse(&[json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]))]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x")).0.unwrap().unwrap();
+        assert!(turn.items.is_empty());
+        assert_eq!(turn.stop, Stop::EndTurn);
     }
 
     #[test]
