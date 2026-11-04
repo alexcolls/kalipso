@@ -1,23 +1,21 @@
 use std::fs;
-use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::mpsc::SyncSender;
 
-use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
-use crossterm::execute;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::buffer::Buffer as ScreenBuffer;
+use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::chat::{AGENTS, ChatCmd, ChatEvent, Chats, ModelsFor};
-use crate::editor::{self, Buffer, Editor, EditorCmd, col_to_display, render_line};
+use crate::editor::{self, Buffer, Editor, EditorCmd, SELECTION_BG, col_to_display, render_line};
 use crate::files::{self, FileTree, FilesCmd, safe_join};
 use crate::llm::{ModelInfo, Provider};
 use crate::term::Terminals;
@@ -260,6 +258,45 @@ fn rank(items: &[String], filter: &str) -> Vec<usize> {
     scored.into_iter().map(|(_, index)| index).collect()
 }
 
+/// A mouse selection over what's on screen in the terminal or chat pane.
+struct TextSelection {
+    pane: Focus,
+    start: (u16, u16),
+    end: (u16, u16),
+    /// Set when the mouse is released. The next draw reads the text and copies it.
+    copy: bool,
+}
+
+/// Highlights the text between two screen positions and returns it. It runs like text:
+/// to the end of the first row, whole rows, then up to the end position.
+fn read_selection(buffer: &mut ScreenBuffer, rect: Rect, a: (u16, u16), b: (u16, u16)) -> String {
+    let row_col = |(x, y): (u16, u16)| (y.clamp(rect.y, rect.bottom() - 1), x.clamp(rect.x, rect.right() - 1));
+    let (a, b) = (row_col(a), row_col(b));
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    let mut text = String::new();
+    for row in start.0..=end.0 {
+        let from = if row == start.0 { start.1 } else { rect.x };
+        let to = if row == end.0 { end.1 } else { rect.right() - 1 };
+        let mut line = String::new();
+        let mut skip = 0;
+        for col in from..=to {
+            let cell = &mut buffer[(col, row)];
+            cell.set_bg(SELECTION_BG);
+            if skip > 0 {
+                skip -= 1; // The second half of a wide character.
+                continue;
+            }
+            line.push_str(cell.symbol());
+            skip = cell.symbol().width().saturating_sub(1);
+        }
+        text.push_str(line.trim_end());
+        if row != end.0 {
+            text.push('\n');
+        }
+    }
+    text
+}
+
 pub struct App {
     pub root: PathBuf,
     pub focus: Focus,
@@ -277,6 +314,7 @@ pub struct App {
     /// Shown in the status line until the next key press.
     pub message: Option<String>,
     pub clipboard: String,
+    selection: Option<TextSelection>,
 }
 
 impl App {
@@ -296,6 +334,7 @@ impl App {
             modal: None,
             message: None,
             clipboard: String::new(),
+            selection: None,
         }
     }
 
@@ -341,6 +380,7 @@ impl App {
     fn on_key(&mut self, key: KeyEvent) {
         self.needs_draw = true;
         self.message = None;
+        self.selection = None;
         if self.modal.is_some() {
             self.on_modal_key(key);
         } else if !self.on_global_key(key) {
@@ -584,7 +624,8 @@ impl App {
 
     /// Copies to the internal clipboard and, through the terminal, the system one.
     fn copy(&mut self, text: String) {
-        let _ = execute!(stdout(), CopyToClipboard::to_clipboard_from(&text));
+        #[cfg(not(test))] // Running the tests shouldn't overwrite the clipboard.
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::clipboard::CopyToClipboard::to_clipboard_from(&text));
         self.clipboard = text;
     }
 
@@ -790,6 +831,7 @@ impl App {
         }
         self.needs_draw = true;
         let under = self.areas.pane_at(mouse.column, mouse.row);
+        self.track_selection(mouse, under);
         let target = match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(pane) = under {
@@ -809,6 +851,41 @@ impl App {
             Some(Focus::Terminal) => self.terminals.on_mouse(mouse),
             Some(Focus::Chat) => self.chats.on_mouse(mouse),
             None => {}
+        }
+    }
+
+    /// Dragging in the terminal or chat pane selects text. The editor has its own selection.
+    fn track_selection(&mut self, mouse: MouseEvent, under: Option<Focus>) {
+        let position = (mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let pane = under.filter(|pane| matches!(pane, Focus::Terminal | Focus::Chat));
+                self.selection = pane.map(|pane| TextSelection { pane, start: position, end: position, copy: false });
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(selection) = &mut self.selection {
+                    selection.end = position;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => match &mut self.selection {
+                Some(selection) if selection.start != selection.end => selection.copy = true,
+                _ => self.selection = None,
+            },
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.selection = None,
+            _ => {}
+        }
+    }
+
+    fn draw_selection(&mut self, frame: &mut Frame) {
+        let Some(selection) = &mut self.selection else { return };
+        let rect = self.areas.get(selection.pane).inner(Margin::new(1, 1));
+        if rect.is_empty() {
+            return;
+        }
+        let text = read_selection(frame.buffer_mut(), rect, selection.start, selection.end);
+        if std::mem::take(&mut selection.copy) && !text.trim().is_empty() {
+            self.message = Some(format!("Copied {} characters.", text.chars().count()));
+            self.copy(text);
         }
     }
 
@@ -834,6 +911,7 @@ impl App {
                 Focus::Chat => self.chats.draw(frame, inner, focused),
             }
         }
+        self.draw_selection(frame);
         frame.render_widget(Paragraph::new(self.status_line()), self.areas.status);
         if let Some(modal) = &self.modal {
             draw_modal(frame, modal);
@@ -1152,6 +1230,55 @@ mod tests {
         assert_eq!(app.editor.docs[0].buf.text(), "found it");
         assert_eq!(app.files.rows[app.files.selected].name, "needle.rs", "the tree reveals it");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn selections_read_like_text_and_cope_with_wide_characters() {
+        let area = Rect::new(0, 0, 12, 4);
+        let mut buffer = ScreenBuffer::empty(area);
+        buffer.set_string(0, 0, "first line", Style::new());
+        buffer.set_string(0, 1, "日本語 wide", Style::new());
+        buffer.set_string(0, 2, "third", Style::new());
+        let rect = Rect::new(0, 0, 12, 3);
+        assert_eq!(read_selection(&mut buffer, rect, (6, 0), (4, 2)), "line\n日本語 wide\nthird");
+        assert_eq!(read_selection(&mut buffer, rect, (4, 2), (6, 0)), "line\n日本語 wide\nthird", "dragging backwards");
+        assert_eq!(read_selection(&mut buffer, rect, (0, 1), (5, 1)), "日本語");
+        assert_eq!(read_selection(&mut buffer, rect, (0, 0), (99, 99)), "first line\n日本語 wide\nthird", "clamped to the pane");
+        assert_eq!(buffer[(6, 0)].style().bg, Some(SELECTION_BG));
+    }
+
+    #[test]
+    fn dragging_in_the_chat_or_terminal_copies_but_a_plain_click_does_not() {
+        let mouse = |kind, column, row| {
+            Event::Input(TermEvent::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }))
+        };
+        let down = MouseEventKind::Down(MouseButton::Left);
+        let drag = MouseEventKind::Drag(MouseButton::Left);
+        let up = MouseEventKind::Up(MouseButton::Left);
+
+        let mut app = test_app();
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let chat = app.areas.chat;
+        let (x, y) = (chat.x + 1, chat.y + 1); // "Press Enter or Alt+T to start a chat."
+
+        app.handle(mouse(down, x, y));
+        app.handle(mouse(up, x, y));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.clipboard, "", "a click isn't a selection");
+
+        app.handle(mouse(down, x, y));
+        app.handle(mouse(drag, x + 4, y));
+        app.handle(mouse(up, x + 4, y));
+        assert_eq!(app.clipboard, "", "copied on the next draw");
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.clipboard, "Press");
+        assert_eq!(app.message.as_deref(), Some("Copied 5 characters."));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.message.as_deref(), Some("Copied 5 characters."), "copies once");
+
+        app.handle(Event::Input(TermEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))));
+        assert!(app.selection.is_none(), "a key press clears the highlight");
     }
 
     /// Every pane has content, and a popup is open, at every small terminal size.

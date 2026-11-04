@@ -26,7 +26,7 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const CHECKPOINT_EVERY: usize = 256;
 /// Longer lines (minified bundles) render plain: syntect gets very slow on them.
 const MAX_HIGHLIGHT_LINE: usize = 4096;
-const SELECTION_BG: Color = Color::Rgb(60, 70, 95);
+pub const SELECTION_BG: Color = Color::Rgb(60, 70, 95);
 
 pub const HINTS: &str = "Ctrl+S save  Ctrl+P open  Ctrl+Z/Y undo  Ctrl+F find  F3 next  Ctrl+G line  Alt+T new  Alt+W close";
 

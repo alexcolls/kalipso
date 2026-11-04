@@ -13,7 +13,7 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::app::{Event, TabHits, tab_line};
 
-pub const HINTS: &str = "Alt+T new  Alt+W close  Alt+PgUp/PgDn tabs  Alt+S scroll mode  wheel scrolls";
+pub const HINTS: &str = "Alt+T new  Alt+W close  Alt+PgUp/PgDn tabs  Alt+S scroll mode  wheel scrolls  drag copies";
 pub const SCROLL_HINTS: &str = "SCROLL MODE  ↑↓ PgUp/PgDn Home/End move  Esc leaves";
 
 const SCROLLBACK: usize = 10_000;
