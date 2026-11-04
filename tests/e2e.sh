@@ -36,6 +36,14 @@ gone() {
     done
     fail "$name (still showing: $text)"
 }
+file_has() {
+    local name=$1 file=$2 text=$3 i
+    for i in $(seq 50); do
+        grep -qF -- "$text" "$file" 2>/dev/null && { pass "$name"; return; }
+        sleep 0.1
+    done
+    fail "$name (not in $file: $text)"
+}
 # Column and row of some text on screen, counting from 1. Python, because mawk's index()
 # counts bytes and the borders are multi-byte.
 locate() {
@@ -104,11 +112,13 @@ chmod +x "$CONFIG/bin/rust-analyzer"
 
 # `env`, because tmux overwrites SHELL in new panes. Plain sh keeps results independent of
 # anyone's shell config. Only Claude has a key, pointed at the mock, and the real config is
-# left alone.
+# left alone. The exit status goes to a file because tmux linked with libutempter, like
+# Ubuntu's, can leave #{pane_dead_status} empty for good.
 "${T[@]}" new-session -d -s kalipso -x 140 -y 45 -c "$WORK" env SHELL=/bin/sh \
     PATH="$CONFIG/bin:$PATH" MOCK_LSP_LOG="$CONFIG/lsp.log" \
     ANTHROPIC_API_KEY=e2e-test-key ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$CONFIG/port")/v1" \
-    XDG_CONFIG_HOME="$CONFIG" XDG_DATA_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= "$BIN"
+    XDG_CONFIG_HOME="$CONFIG" XDG_DATA_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= \
+    sh -c '"$0"; echo $? > "$XDG_CONFIG_HOME/exit-status"' "$BIN"
 "${T[@]}" set-option -s set-clipboard on
 expect "starts with all panes" "1 Files"
 expect "terminal pane visible" "2 Terminal"
@@ -149,7 +159,7 @@ expect "tab marks unsaved changes" "hello.rs ●"
 key C-z; gone "undo removes the edit" 'XYZfn'
 key -l 'ABC'; key C-s
 gone "save clears the unsaved mark" "hello.rs ●"
-if head -c 12 "$WORK/hello.rs" | grep -qF 'ABCfn main'; then pass "save writes to disk"; else fail "save writes to disk"; fi
+file_has "save writes to disk" "$WORK/hello.rs" 'ABCfn main'
 expect "the tree marks a file git sees as changed" "hello.rs M"
 expect "the gutter marks a changed line" "▎ABCfn main"
 
@@ -179,6 +189,7 @@ if [ -f "$WORK/made/by/test.txt" ]; then pass "new file created with parents"; e
 expect "tree reveals the new file" "test.txt"
 key M-1; key d; expect "delete asks first" "Delete made/by/test.txt?"
 key y; gone "tree drops deleted file" "test.txt ●"
+for i in $(seq 50); do [ -e "$WORK/made/by/test.txt" ] || break; sleep 0.1; done
 if [ -e "$WORK/made/by/test.txt" ]; then fail "delete removes the file"; else pass "delete removes the file"; fi
 
 key C-p; expect "Ctrl+P opens the file picker" "Open file"
@@ -207,7 +218,8 @@ cursor_on "F12 finds the definition from past an emoji, and lands on its name" "
 expect "problems appear next to their line" "BAD line   mock problem: BAD"
 key S-F12; cursor_on "Shift+F12 comes back to the call" "target();" 1
 key F8; expect "F8 jumps to a problem and describes it" "1 problem: mock problem: BAD"
-if grep -qF "$(cd "$WORK" && pwd -P)" "$CONFIG/kalipso/config.json" && grep -qF 'rust-analyzer' "$CONFIG/kalipso/config.json"; then pass "the answer is saved"; else fail "the answer is saved"; fi
+file_has "the answer is saved for this project" "$CONFIG/kalipso/config.json" "$(cd "$WORK" && pwd -P)"
+file_has "the answer names the server" "$CONFIG/kalipso/config.json" '"rust-analyzer"'
 
 key M-f; expect "Alt+F asks what to search for" "Search project"
 key -l 'needle_in'; key Enter
@@ -329,7 +341,7 @@ key -l '/model'; key Enter
 expect "/model lists the provider's models" "Claude model"
 key -l 'sonnet'; key Enter
 expect "/model switches the model" "claude-sonnet-mock"
-if grep -qF 'claude-sonnet-mock' "$CONFIG/kalipso/config.json" 2>/dev/null; then pass "the model choice is saved"; else fail "the model choice is saved"; fi
+file_has "the model choice is saved" "$CONFIG/kalipso/config.json" 'claude-sonnet-mock'
 key -l 'hello there'; key Enter
 expect "a second message gets a reply" "Hello from the mock."
 
@@ -373,22 +385,14 @@ expect "a resumed chat keeps working" "Hello from the mock."
 # --- end of scenario: quitting must hand back a working terminal.
 "${T[@]}" set-option -t kalipso remain-on-exit on >/dev/null
 key C-q
-# Waits for the exit status itself, in case tmux reports it later than pane_dead.
-early=0
 for i in $(seq 50); do
-    state=$("${T[@]}" display-message -p -t kalipso '#{pane_dead} #{pane_dead_status}#{pane_dead_signal}')
-    case "$state" in
-        "1 ") early=1 ;;
-        "1 "*) break ;;
-    esac
+    [ -s "$CONFIG/exit-status" ] && break
     sleep 0.1
 done
-[ "$early" = 1 ] && echo "      (tmux reported the pane dead before its exit status)"
-if [ "$("${T[@]}" display-message -p -t kalipso '#{pane_dead_status}')" = 0 ]; then
+if [ "$(cat "$CONFIG/exit-status" 2>/dev/null)" = 0 ]; then
     pass "Ctrl+Q exits cleanly"
 else
-    fail "Ctrl+Q exits cleanly ($("${T[@]}" display-message -p -t kalipso 'dead=#{pane_dead} status=#{pane_dead_status} signal=#{pane_dead_signal}'))"
-    ps -o pid,stat,wchan:24,etimes,args -p "$("${T[@]}" display-message -p -t kalipso '#{pane_pid}')" | sed 's/^/      | /'
+    fail "Ctrl+Q exits cleanly"
 fi
 
 server=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["pid"])' "$CONFIG/lsp.log")

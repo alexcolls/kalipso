@@ -541,8 +541,14 @@ impl App {
                 self.editor.diagnostics.insert(path, diagnostics);
                 self.needs_draw = true;
             }
-            LspEvent::NoDefinition => {
-                self.message = Some("No definition found.".to_owned());
+            LspEvent::NoDefinition(working_on) => {
+                self.message = Some(match working_on {
+                    Some(work) => format!(
+                        "Nothing found yet, but {} is still working ({work}). Try again soon.",
+                        SERVERS[server].name
+                    ),
+                    None => "No definition found.".to_owned(),
+                });
                 self.needs_draw = true;
             }
             LspEvent::Problem(problem) => {
@@ -2239,6 +2245,47 @@ mod tests {
             Some(path.as_path()),
             "back across files"
         );
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn no_definition_says_when_the_server_is_still_loading() {
+        let (mut app, dir, rx, _log) = server_rig("loading");
+        app.chats.trust_server("rust-analyzer").unwrap();
+        let path = dir.join("code.rs");
+        fs::write(&path, "STILL_LOADING\nunknown_word\n").unwrap();
+        app.open_file(&path);
+        app.handle(Event::Tick);
+        // A problem-free first report means the server has seen the file and reported its work.
+        pump(&mut app, &rx, |app| {
+            app.editor.diagnostics.contains_key(&path)
+        });
+        let doc = app.editor.doc().unwrap();
+        doc.buf
+            .set_cursor(crate::editor::Pos { line: 1, col: 0 }, false);
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        pump(&mut app, &rx, |app| {
+            app.message
+                .as_deref()
+                .is_some_and(|text| text.starts_with("Nothing found yet"))
+        });
+        assert_eq!(
+            app.message.as_deref(),
+            Some(
+                "Nothing found yet, but rust-analyzer is still working (Indexing). Try again soon."
+            )
+        );
+
+        // The server finishes, and now "nothing" means nothing.
+        let doc = app.editor.doc().unwrap();
+        doc.buf.replace_all("done\nunknown_word\n");
+        doc.buf
+            .set_cursor(crate::editor::Pos { line: 1, col: 0 }, false);
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        pump(&mut app, &rx, |app| {
+            app.message.as_deref() == Some("No definition found.")
+        });
         drop(app);
         fs::remove_dir_all(&dir).unwrap();
     }
