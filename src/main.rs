@@ -1,4 +1,5 @@
 mod app;
+mod chat;
 mod editor;
 mod files;
 mod llm;

@@ -16,8 +16,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
+use crate::chat::{AGENTS, ChatCmd, ChatEvent, Chats, ModelsFor};
 use crate::editor::{self, Buffer, Editor, EditorCmd, col_to_display, render_line};
 use crate::files::{self, FileTree, FilesCmd, safe_join};
+use crate::llm::{ModelInfo, Provider};
 use crate::term::Terminals;
 
 /// Everything the main thread reacts to. Worker threads only ever send these.
@@ -26,6 +28,8 @@ pub enum Event {
     Tick,
     PtyOutput { id: u64, bytes: Vec<u8> },
     PtyExit { id: u64 },
+    Chat { chat: u64, generation: u64, event: ChatEvent },
+    Models { provider: Provider, purpose: ModelsFor, result: Result<Vec<ModelInfo>, String> },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,11 +177,17 @@ pub enum Then {
     Find,
     GoToLine,
     Quit,
+    CloseChat(u64),
+    ChatAgent,
+    ChatProvider(usize),
+    ChatModel(usize, Provider),
+    SwitchModel(u64),
 }
 
 pub enum Modal {
     Input { title: String, input: Buffer, then: Then },
     Confirm { title: String, then: Then },
+    Pick { title: String, items: Vec<String>, filter: String, selected: usize, then: Then },
 }
 
 impl Modal {
@@ -187,6 +197,16 @@ impl Modal {
         input.edit_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), 1, "");
         Modal::Input { title: title.into(), input, then }
     }
+
+    fn pick(title: impl Into<String>, items: Vec<String>, then: Then) -> Modal {
+        Modal::Pick { title: title.into(), items, filter: String::new(), selected: 0, then }
+    }
+}
+
+/// Items containing the filter text, ignoring case.
+fn filtered<'a>(items: &'a [String], filter: &str) -> Vec<&'a String> {
+    let filter = filter.to_lowercase();
+    items.iter().filter(|item| item.to_lowercase().contains(&filter)).collect()
 }
 
 pub struct App {
@@ -201,6 +221,7 @@ pub struct App {
     pub files: FileTree,
     pub editor: Editor,
     pub terminals: Terminals,
+    pub chats: Chats,
     pub modal: Option<Modal>,
     /// Shown in the status line until the next key press.
     pub message: Option<String>,
@@ -212,7 +233,8 @@ impl App {
         App {
             files: FileTree::new(root.clone()),
             editor: Editor::default(),
-            terminals: Terminals::new(root.clone(), tx),
+            terminals: Terminals::new(root.clone(), tx.clone()),
+            chats: Chats::new(root.clone(), tx),
             root,
             focus: Focus::Files,
             middle: Focus::Editor,
@@ -246,6 +268,15 @@ impl App {
                 self.terminals.on_exit(id);
                 self.needs_draw = true;
             }
+            Event::Chat { chat, generation, event } => {
+                if self.chats.on_event(chat, generation, event) {
+                    // Show what the agent just did without waiting for the next tick.
+                    self.files.refresh();
+                    self.editor.check_disk();
+                }
+                self.needs_draw = true;
+            }
+            Event::Models { provider, purpose, result } => self.on_models(provider, purpose, result),
         }
     }
 
@@ -272,18 +303,84 @@ impl App {
                     self.run_editor_cmd(cmd);
                 }
                 Focus::Terminal => self.terminals.on_key(key),
-                Focus::Chat => {}
+                Focus::Chat => {
+                    let cmd = self.chats.on_key(key, &self.clipboard);
+                    self.run_chat_cmd(cmd);
+                }
             }
         }
+    }
+
+    fn run_chat_cmd(&mut self, cmd: ChatCmd) {
+        match cmd {
+            ChatCmd::None => {}
+            ChatCmd::NewChat => self.new_chat(),
+            ChatCmd::Copied(text) => self.copy(text),
+            ChatCmd::Message(text) => self.message = Some(text),
+            ChatCmd::PickModel(chat, provider) => {
+                self.message = Some(format!("Loading {} models...", provider.name()));
+                self.chats.load_models(provider, ModelsFor::Switch(chat));
+            }
+        }
+    }
+
+    fn new_chat(&mut self) {
+        let items = AGENTS.iter().map(|agent| format!("{}: {}", agent.name, agent.about)).collect();
+        self.modal = Some(Modal::pick("New chat: pick an agent", items, Then::ChatAgent));
+    }
+
+    fn on_models(&mut self, provider: Provider, purpose: ModelsFor, result: Result<Vec<ModelInfo>, String>) {
+        self.needs_draw = true;
+        let models = match result {
+            Ok(models) => models,
+            Err(err) => {
+                // Features are only an optimisation: without them, requests use API defaults.
+                if purpose != ModelsFor::Features {
+                    self.message = Some(format!("Can't list {} models: {err}", provider.name()));
+                }
+                return;
+            }
+        };
+        if provider == Provider::Claude {
+            self.chats.remember_features(&models);
+        }
+        if purpose == ModelsFor::Features {
+            return;
+        }
+        self.message = None;
+        if models.is_empty() {
+            self.message = Some(format!("{} offered no models.", provider.name()));
+            return;
+        }
+        let then = match purpose {
+            ModelsFor::NewChat(agent) => Then::ChatModel(agent, provider),
+            ModelsFor::Switch(chat) => Then::SwitchModel(chat),
+            ModelsFor::Features => return,
+        };
+        let items = models.into_iter().map(|model| model.id).collect();
+        self.modal = Some(Modal::pick(format!("{} model", provider.name()), items, then));
+    }
+
+    fn create_chat(&mut self, agent: usize, provider: Provider, model: String) {
+        if provider == Provider::Claude {
+            self.chats.load_models(provider, ModelsFor::Features);
+        }
+        self.chats.create(agent, provider, model);
+        self.set_focus(Focus::Chat);
     }
 
     /// Keys handled before the focused pane sees them, including the terminal pane.
     fn on_global_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
-            if self.editor.has_unsaved() {
-                self.modal = Some(Modal::Confirm { title: "Unsaved changes will be lost. Quit?".into(), then: Then::Quit });
-            } else {
-                self.should_quit = true;
+            let worry = match (self.editor.has_unsaved(), self.chats.any_busy()) {
+                (true, true) => Some("Unsaved changes will be lost and running agents stopped. Quit?"),
+                (true, false) => Some("Unsaved changes will be lost. Quit?"),
+                (false, true) => Some("Running agents will be stopped. Quit?"),
+                (false, false) => None,
+            };
+            match worry {
+                Some(title) => self.modal = Some(Modal::Confirm { title: title.into(), then: Then::Quit }),
+                None => self.quit(),
             }
             return true;
         }
@@ -316,6 +413,11 @@ impl App {
         true
     }
 
+    fn quit(&mut self) {
+        self.chats.stop_all();
+        self.should_quit = true;
+    }
+
     fn new_tab(&mut self) {
         match self.focus {
             Focus::Editor => self.editor.new_untitled(),
@@ -324,7 +426,8 @@ impl App {
                     self.message = Some(format!("Can't start a shell: {err}"));
                 }
             }
-            Focus::Files | Focus::Chat => {}
+            Focus::Chat => self.new_chat(),
+            Focus::Files => {}
         }
     }
 
@@ -339,7 +442,16 @@ impl App {
                 }
             }
             Focus::Terminal => self.terminals.close_tab(),
-            Focus::Files | Focus::Chat => {}
+            Focus::Chat => {
+                let Some(chat) = self.chats.active_chat() else { return };
+                let (id, busy) = (chat.id, chat.is_busy());
+                if busy {
+                    self.modal = Some(Modal::Confirm { title: "This agent is still working. Stop it and close?".into(), then: Then::CloseChat(id) });
+                } else {
+                    self.chats.close(id);
+                }
+            }
+            Focus::Files => {}
         }
     }
 
@@ -347,7 +459,8 @@ impl App {
         match self.focus {
             Focus::Editor => self.editor.cycle(delta),
             Focus::Terminal => self.terminals.cycle(delta),
-            Focus::Files | Focus::Chat => {}
+            Focus::Chat => self.chats.cycle(delta),
+            Focus::Files => {}
         }
     }
 
@@ -433,6 +546,33 @@ impl App {
                     input.edit_key(key, 1, &self.clipboard.replace('\n', " "));
                 }
             },
+            Modal::Pick { items, filter, selected, .. } => {
+                let shown = filtered(items, filter).len();
+                match key.code {
+                    KeyCode::Esc => self.modal = None,
+                    KeyCode::Up => *selected = selected.saturating_sub(1),
+                    KeyCode::Down => *selected = (*selected + 1).min(shown.saturating_sub(1)),
+                    KeyCode::PageUp => *selected = selected.saturating_sub(10),
+                    KeyCode::PageDown => *selected = (*selected + 10).min(shown.saturating_sub(1)),
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        *selected = 0;
+                    }
+                    KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                        filter.push(c);
+                        *selected = 0;
+                    }
+                    KeyCode::Enter => {
+                        let choice = filtered(items, filter).get(*selected).map(|item| (*item).clone());
+                        if let Some(choice) = choice
+                            && let Some(Modal::Pick { then, .. }) = self.modal.take()
+                        {
+                            self.finish(then, choice);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -446,8 +586,38 @@ impl App {
     fn try_finish(&mut self, then: Then, value: &str) -> Result<(), String> {
         let text = |err: std::io::Error| err.to_string();
         match then {
-            Then::Quit => self.should_quit = true,
+            Then::Quit => self.quit(),
             Then::CloseDoc(index) => self.editor.close(index),
+            Then::CloseChat(id) => self.chats.close(id),
+            Then::ChatAgent => {
+                let agent = AGENTS.iter().position(|agent| value.starts_with(agent.name)).ok_or("Unknown agent")?;
+                let ready: Vec<Provider> = Provider::ALL.into_iter().filter(|p| p.api_key().is_some()).collect();
+                match ready.as_slice() {
+                    [] => {
+                        let vars: Vec<&str> = Provider::ALL.iter().map(|p| p.key_env()).collect();
+                        return Err(format!("No API keys found. Set one of {} and restart.", vars.join(", ")));
+                    }
+                    [only] => self.chat_provider_chosen(agent, *only),
+                    many => {
+                        let items = many.iter().map(|p| p.name().to_owned()).collect();
+                        self.modal = Some(Modal::pick("Pick a provider", items, Then::ChatProvider(agent)));
+                    }
+                }
+            }
+            Then::ChatProvider(agent) => {
+                let provider = Provider::ALL.into_iter().find(|p| p.name() == value).ok_or("Unknown provider")?;
+                self.chat_provider_chosen(agent, provider);
+            }
+            Then::ChatModel(agent, provider) => {
+                self.chats.save_model(provider, value).map_err(|err| format!("Couldn't save the model choice: {err}"))?;
+                self.create_chat(agent, provider, value.to_owned());
+            }
+            Then::SwitchModel(id) => {
+                let chat = self.chats.tabs.iter_mut().find(|chat| chat.id == id).ok_or("That chat is closed")?;
+                chat.model = value.to_owned();
+                let provider = chat.provider;
+                self.chats.save_model(provider, value).map_err(|err| format!("Couldn't save the model choice: {err}"))?;
+            }
             Then::GoToLine => {
                 let line = value.trim().parse().map_err(|_| format!("Not a line number: {value}"))?;
                 self.editor.go_to_line(line);
@@ -515,13 +685,28 @@ impl App {
         Ok(())
     }
 
+    fn chat_provider_chosen(&mut self, agent: usize, provider: Provider) {
+        match self.chats.saved_model(provider) {
+            Some(model) => self.create_chat(agent, provider, model),
+            None => {
+                self.message = Some(format!("Loading {} models...", provider.name()));
+                self.chats.load_models(provider, ModelsFor::NewChat(agent));
+            }
+        }
+    }
+
     fn on_paste(&mut self, text: &str) {
         self.needs_draw = true;
         match &mut self.modal {
             Some(Modal::Input { input, .. }) => input.insert(&text.replace(['\r', '\n'], " ")),
+            Some(Modal::Pick { filter, selected, .. }) => {
+                filter.push_str(&text.replace(['\r', '\n'], " "));
+                *selected = 0;
+            }
             Some(Modal::Confirm { .. }) => {}
             None if self.focus == Focus::Editor => self.editor.paste(text),
             None if self.focus == Focus::Terminal => self.terminals.paste(text),
+            None if self.focus == Focus::Chat => self.chats.paste(text),
             None => {}
         }
     }
@@ -549,7 +734,8 @@ impl App {
             }
             Some(Focus::Editor) => self.editor.on_mouse(mouse),
             Some(Focus::Terminal) => self.terminals.on_mouse(mouse),
-            _ => {}
+            Some(Focus::Chat) => self.chats.on_mouse(mouse),
+            None => {}
         }
     }
 
@@ -572,7 +758,7 @@ impl App {
                         self.message = Some(err);
                     }
                 }
-                Focus::Chat => {}
+                Focus::Chat => self.chats.draw(frame, inner, focused),
             }
         }
         frame.render_widget(Paragraph::new(self.status_line()), self.areas.status);
@@ -584,12 +770,15 @@ impl App {
     fn status_line(&self) -> Line<'static> {
         let (text, style) = match &self.message {
             Some(message) => (message.clone(), Style::new().fg(Color::Yellow)),
+            None if self.focus != Focus::Chat && self.chats.any_approving() => {
+                ("An agent is waiting for your approval. Alt+4 to answer.".to_owned(), Style::new().fg(Color::Black).bg(Color::Yellow))
+            }
             None => {
                 let hints = match self.focus {
                     Focus::Files => files::HINTS,
                     Focus::Editor => editor::HINTS,
                     Focus::Terminal => self.terminals.hints(),
-                    Focus::Chat => "",
+                    Focus::Chat => self.chats.hints(),
                 };
                 (hints.to_owned(), Style::new().fg(Color::DarkGray))
             }
@@ -613,15 +802,21 @@ pub fn pane_block(pane: Focus, focused: bool) -> Block<'static> {
 
 fn draw_modal(frame: &mut Frame, modal: &Modal) {
     let screen = frame.area();
-    let title = match modal {
-        Modal::Input { title, .. } | Modal::Confirm { title, .. } => title,
+    let (title, list_rows) = match modal {
+        Modal::Input { title, .. } | Modal::Confirm { title, .. } => (title, 0),
+        Modal::Pick { title, items, filter, .. } => (title, filtered(items, filter).len().clamp(1, 14) as u16 + 1),
     };
-    let width = (title.width() as u16 + 6).clamp(44, 96).min(screen.width);
+    let wanted = match modal {
+        Modal::Pick { items, .. } => items.iter().map(|item| item.width().min(200) as u16 + 4).max().unwrap_or(0),
+        _ => 0,
+    };
+    let width = (title.width() as u16 + 6).max(wanted).clamp(44, 96).min(screen.width);
+    let height = (3 + list_rows).min(screen.height);
     let area = Rect {
         x: screen.x + (screen.width - width) / 2,
-        y: screen.y + screen.height.saturating_sub(3) / 3,
+        y: screen.y + (screen.height - height) / 3,
         width,
-        height: 3.min(screen.height),
+        height,
     };
     let block = Block::bordered()
         .border_style(Style::new().fg(Color::Yellow))
@@ -643,6 +838,24 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
             let selected = input.selection().map(|(start, end)| (start.col, end.col));
             frame.render_widget(Paragraph::new(render_line(line, &[], selected, left, inner.width as usize)), inner);
             frame.set_cursor_position((inner.x + (display - left) as u16, inner.y));
+        }
+        Modal::Pick { items, filter, selected, .. } => {
+            let matches = filtered(items, filter);
+            let rows = inner.height.saturating_sub(1) as usize;
+            let top = (*selected + 1).saturating_sub(rows);
+            let mut lines = vec![Line::from(vec![
+                Span::styled("filter: ", Style::new().fg(Color::DarkGray)),
+                Span::raw(filter.clone()),
+            ])];
+            if matches.is_empty() {
+                lines.push(Line::from(Span::styled("(no matches)", Style::new().fg(Color::DarkGray))));
+            }
+            for (index, item) in matches.iter().enumerate().skip(top).take(rows) {
+                let style = if index == *selected { Style::new().fg(Color::Black).bg(Color::Yellow) } else { Style::new() };
+                lines.push(Line::from(Span::styled((*item).clone(), style)));
+            }
+            frame.render_widget(Paragraph::new(lines), inner);
+            frame.set_cursor_position((inner.x + 8 + filter.width() as u16, inner.y));
         }
     }
 }
