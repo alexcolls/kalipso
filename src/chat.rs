@@ -6,7 +6,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
@@ -415,7 +415,7 @@ pub struct Chat {
     turns: usize,
     tokens: (u64, u64),
     activity: Option<String>,
-    responses_stored: Arc<AtomicBool>,
+    responses_fallback: Arc<AtomicU8>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -524,7 +524,7 @@ impl Chat {
                 |model| model.features,
             ),
             max_output: info.and_then(|model| model.max_output),
-            responses_stored: self.responses_stored.clone(),
+            responses_fallback: self.responses_fallback.clone(),
         })
     }
 
@@ -1447,7 +1447,7 @@ impl Chats {
             turns: 0,
             tokens,
             activity: None,
-            responses_stored: Arc::new(AtomicBool::new(false)),
+            responses_fallback: Arc::new(AtomicU8::new(0)),
             worker: None,
         });
         self.active = self.tabs.len() - 1;
