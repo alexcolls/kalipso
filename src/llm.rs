@@ -774,10 +774,12 @@ pub mod testing {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
+    /// A request's path, lowercased headers and body.
+    pub type Seen = (String, Vec<String>, String);
+
     pub struct Mock {
         pub url: String,
-        /// Each request's path, lowercased headers and body, in order.
-        pub requests: Arc<Mutex<Vec<(String, Vec<String>, String)>>>,
+        pub requests: Arc<Mutex<Vec<Seen>>>,
     }
 
     /// Serves one canned (status, content) per request, in order.
