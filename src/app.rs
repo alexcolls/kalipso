@@ -616,7 +616,7 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
     let title = match modal {
         Modal::Input { title, .. } | Modal::Confirm { title, .. } => title,
     };
-    let width = (title.width() as u16 + 6).clamp(44, screen.width.max(1)).min(screen.width);
+    let width = (title.width() as u16 + 6).clamp(44, 96).min(screen.width);
     let area = Rect {
         x: screen.x + (screen.width - width) / 2,
         y: screen.y + screen.height.saturating_sub(3) / 3,
@@ -629,6 +629,9 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
+    if inner.is_empty() {
+        return; // Too small to show anything inside the border.
+    }
     match modal {
         Modal::Confirm { .. } => {
             frame.render_widget(Paragraph::new("y yes    n no"), inner);
