@@ -12,10 +12,18 @@ shells, an editor, and multi-chat with AI agents, on Claude, OpenAI, Grok and Op
 └─────────┴──────────────────┴──────────┘
 ```
 
+## Install
+
+Download `kalipso-<version>-x86_64-linux.tar.gz` from
+[Releases](https://github.com/alexcolls/kalipso/releases), unpack it, and put `kalipso` on your
+`PATH`. It needs glibc 2.39 or newer, so Ubuntu 24.04 or Debian 13 and later. On anything else,
+build from source with Rust.
+
 ## Run it
 
 ```sh
-cargo run --release -- path/to/project   # defaults to the current folder
+kalipso path/to/project                  # defaults to the current folder
+cargo run --release -- path/to/project   # or from source
 ```
 
 Linux is the tested platform. Agents' `run_command` tool needs a Unix system.
