@@ -78,15 +78,19 @@ focus() {
 mkdir -p "$WORK/sub"
 printf 'fn main() {\n    println!("hello");\n}\n' > "$WORK/hello.rs"
 printf 'inner text here\n' > "$WORK/sub/nested.txt"
+printf 'first\nneedle_in_file();\n' > "$WORK/sub/searchable.txt"
 printf 'ignored.txt\n' > "$WORK/.gitignore"
 printf 'secret\n' > "$WORK/ignored.txt"
+git -C "$WORK" init -q
+git -C "$WORK" add -A
+git -C "$WORK" -c user.name=t -c user.email=t@example.com commit -qm first
 
 # `env`, because tmux overwrites SHELL in new panes. Plain sh keeps results independent of
 # anyone's shell config. Only Claude has a key, pointed at the mock, and the real config is
 # left alone.
 "${T[@]}" new-session -d -s kalipso -x 140 -y 45 -c "$WORK" env SHELL=/bin/sh \
     ANTHROPIC_API_KEY=e2e-test-key ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$CONFIG/port")/v1" \
-    XDG_CONFIG_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= "$BIN"
+    XDG_CONFIG_HOME="$CONFIG" XDG_DATA_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= "$BIN"
 "${T[@]}" set-option -s set-clipboard on
 expect "starts with all panes" "1 Files"
 expect "terminal pane visible" "2 Terminal"
@@ -128,6 +132,8 @@ key C-z; gone "undo removes the edit" 'XYZfn'
 key -l 'ABC'; key C-s
 gone "save clears the unsaved mark" "hello.rs ●"
 if head -c 12 "$WORK/hello.rs" | grep -qF 'ABCfn main'; then pass "save writes to disk"; else fail "save writes to disk"; fi
+expect "the tree marks a file git sees as changed" "hello.rs M"
+expect "the gutter marks a changed line" "▎ABCfn main"
 
 printf 'changed outside\n' > "$WORK/hello.rs"
 expect "clean buffer reloads outside changes" "changed outside"
@@ -163,6 +169,15 @@ key BSpace; key BSpace; key BSpace; key BSpace
 key -l 'nstd'; key Enter
 focus "the picker opens the fuzzy match in the editor" "3 Editor"
 expect "the matched file's content is shown" "inner text here"
+
+key M-f; expect "Alt+F asks what to search for" "Search project"
+key -l 'needle_in'; key Enter
+expect "search lists matches" "sub/searchable.txt:2: needle_in_file();"
+key Enter
+focus "a search result opens in the editor" "3 Editor"
+expect "the matching file is shown" "searchable.txt"
+key C-p; key -l 'nstd'; key Enter
+expect "back on the nested file" "inner text here"
 
 # --- Terminal
 key M-2
@@ -239,7 +254,15 @@ if [ -e "$WORK/agent.txt" ]; then fail "other keys don't approve"; else pass "ot
 key M-1
 expect "other panes warn about the approval" "An agent is waiting for your approval"
 key M-4
+key v
+focus "v opens the proposal in the editor" "3 Editor"
+expect "the proposal has its own tab" "agent.txt (proposed)"
+expect "the proposal explains itself" "Proposed by an agent"
+key -l 'typing does nothing'
+if screen | grep -qF "typing does nothing"; then fail "proposals are read-only"; else pass "proposals are read-only"; fi
 key y
+focus "answering in the editor returns to the chat" "4 Chat"
+gone "the answered proposal closes" "agent.txt (proposed)"
 expect "tool result shows in the transcript" "✓ write_file agent.txt"
 expect "the agent loop continues after the tool" "All done. Here is the code:"
 expect "fenced code is shown" "fn main() {}"
@@ -250,6 +273,7 @@ gone "the tab mark clears when done" "Code 2 !"
 
 key -l 'run a command'; key Enter
 expect "commands show before they run" 'echo key=[$ANTHROPIC_API_KEY]'
+key v; expect "only file changes open in the editor" "Only file changes can be opened"
 key n
 expect "a declined command is reported" "✗ run_command"
 if [ -e "$WORK/command.txt" ]; then fail "a declined command never runs"; else pass "a declined command never runs"; fi
@@ -294,6 +318,16 @@ key M-w; gone "Alt+W closes a chat tab" "Design 3"
 key M-z; expect "chat can zoom" "A new reply after the summary."
 gone "zoom hides the file tree" "1 Files"
 key M-z; expect "zoom restores" "1 Files"
+
+saved=$(find "$CONFIG/kalipso/chats" -type f 2>/dev/null | wc -l)
+if [ "$saved" -eq 1 ]; then pass "only chats with messages are saved"; else fail "only chats with messages are saved (found $saved)"; fi
+key M-w; expect "closing the last chat shows the welcome" "Press Enter or Alt+T"
+gone "the transcript is gone with the tab" "A new reply after the summary."
+key Enter; expect "the picker offers saved chats" "Resume Code: make a file"
+key -l 'resume'; key Enter
+expect "a saved chat comes back with its transcript" "A new reply after the summary."
+key -l 'hello once more'; key Enter
+expect "a resumed chat keeps working" "Hello from the mock."
 
 # --- end of scenario: quitting must hand back a working terminal.
 "${T[@]}" set-option -t kalipso remain-on-exit on >/dev/null
