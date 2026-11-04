@@ -454,6 +454,10 @@ impl App {
             ChatCmd::None => {}
             ChatCmd::NewChat => self.new_chat(),
             ChatCmd::Copied(text) => self.copy(text),
+            ChatCmd::CopiedReply(text) => {
+                self.copy(text);
+                self.message = Some("Copied the last reply.".to_owned());
+            }
             ChatCmd::Message(text) => self.message = Some(text),
             ChatCmd::PickModel(chat, provider) => {
                 self.message = Some(format!("Loading {} models...", provider.name()));

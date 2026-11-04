@@ -614,6 +614,7 @@ pub enum ChatCmd {
     NewChat,
     PickModel(u64, Provider),
     Copied(String),
+    CopiedReply(String),
     Message(String),
 }
 
@@ -851,8 +852,13 @@ impl Chats {
                 chat.input = Buffer::from_text("");
                 return ChatCmd::PickModel(chat.id, chat.provider);
             }
+            if text == "/copy" {
+                chat.input = Buffer::from_text("");
+                let reply = chat.entries.iter().rev().find(|entry| entry.kind == Kind::Assistant);
+                return reply.map_or(ChatCmd::Message("There's no reply to copy yet.".to_owned()), |entry| ChatCmd::CopiedReply(entry.text.clone()));
+            }
             if text.starts_with('/') && !text.contains(char::is_whitespace) {
-                return ChatCmd::Message(format!("Unknown command {text}. /model switches the model."));
+                return ChatCmd::Message(format!("Unknown command {text}. Try /model or /copy."));
             }
             if chat.is_busy() {
                 return ChatCmd::Message("The agent is still working. Esc stops it.".to_owned());
@@ -1473,6 +1479,22 @@ mod tests {
         assert!(rig.transcript().contains("with src/a.rs:3"));
         assert!(!rig.transcript().contains("[Editor state"), "the transcript shows what you typed");
         assert!(rig.request(0)["system"].as_str().unwrap().contains("[Editor state]"));
+        rig.cleanup();
+    }
+
+    #[test]
+    fn slash_copy_returns_the_last_reply_in_full() {
+        let mut rig = rig("copy", "Code", Provider::Claude, vec![text_turn("first"), text_turn("line one\nline two")]);
+        rig.chats.tabs[0].input = Buffer::from_text("/copy");
+        let cmd = rig.chats.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), "", None);
+        assert!(matches!(cmd, ChatCmd::Message(_)), "no reply yet");
+        rig.say("a");
+        rig.settle();
+        rig.say("b");
+        rig.settle();
+        rig.chats.tabs[0].input = Buffer::from_text("/copy");
+        let cmd = rig.chats.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), "", None);
+        assert!(matches!(cmd, ChatCmd::CopiedReply(text) if text == "line one\nline two"));
         rig.cleanup();
     }
 
