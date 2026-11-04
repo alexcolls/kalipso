@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -24,6 +24,10 @@ const FALLBACK_MODELS: [&str; 4] = [
 ];
 const MAX_TOKENS: u64 = 64000;
 const MAX_RETRIES: u32 = 2;
+/// How far a Responses provider has made us back off: first from asking for encrypted
+/// reasoning, which OpenAI includes anyway, and only then from `store: false`.
+const WITHOUT_INCLUDE: u8 = 1;
+const WITHOUT_STORE: u8 = 2;
 /// Applies to each read, so long streams are fine as long as data keeps arriving.
 const READ_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -126,7 +130,7 @@ pub struct Request {
     /// The model's output limit, where the provider publishes one.
     pub max_output: Option<u64>,
     /// Set once a provider refuses `store: false`, so later requests skip it.
-    pub responses_stored: Arc<AtomicBool>,
+    pub responses_fallback: Arc<AtomicU8>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -260,9 +264,12 @@ pub fn build_body(request: &Request) -> (&'static str, Value) {
             if !defs.is_empty() {
                 body["tools"] = json!(function_tools(&defs, false));
             }
-            if !request.responses_stored.load(Ordering::Relaxed) {
+            let fallback = request.responses_fallback.load(Ordering::Relaxed);
+            if fallback < WITHOUT_STORE {
                 // Keeps code out of the provider's stored responses where that's supported.
                 body["store"] = json!(false);
+            }
+            if fallback < WITHOUT_INCLUDE {
                 body["include"] = json!(["reasoning.encrypted_content"]);
             }
             ("/responses", body)
@@ -366,15 +373,21 @@ pub fn stream(
                     .and_then(|value| value.parse::<u64>().ok());
                 let text = response.body_mut().read_to_string().unwrap_or_default();
                 let lowered = text.to_lowercase();
-                if status == 400
-                    && request.wire == Wire::Responses
-                    && !request.responses_stored.load(Ordering::Relaxed)
-                    && ["store", "include", "encrypted"]
-                        .iter()
-                        .any(|word| lowered.contains(word))
-                {
-                    request.responses_stored.store(true, Ordering::Relaxed);
-                    continue;
+                if status == 400 && request.wire == Wire::Responses {
+                    let fallback = request.responses_fallback.load(Ordering::Relaxed);
+                    let about_include =
+                        lowered.contains("include") || lowered.contains("encrypted");
+                    let next = if fallback < WITHOUT_INCLUDE && about_include {
+                        Some(WITHOUT_INCLUDE)
+                    } else if fallback < WITHOUT_STORE && lowered.contains("store") {
+                        Some(WITHOUT_STORE)
+                    } else {
+                        None
+                    };
+                    if let Some(next) = next {
+                        request.responses_fallback.store(next, Ordering::Relaxed);
+                        continue;
+                    }
                 }
                 if !is_retryable(status) || attempt >= MAX_RETRIES {
                     return Err(error_text(status, &text));
@@ -716,6 +729,8 @@ impl Parser for ResponsesParser {
 #[derive(Default)]
 struct ChatParser {
     text: String,
+    reasoning: String,
+    reasoning_details: Vec<Value>,
     calls: BTreeMap<u64, (String, String, String)>,
     finish_reason: Option<String>,
     input_tokens: u64,
@@ -743,7 +758,12 @@ impl Parser for ChatParser {
             emit(Delta::Text(text.to_owned()));
         }
         if let Some(text) = delta["reasoning"].as_str().filter(|text| !text.is_empty()) {
+            self.reasoning.push_str(text);
             emit(Delta::Thinking(text.to_owned()));
+        }
+        // The docs say the sequence is the chunks' objects in order, unmodified.
+        if let Some(details) = delta["reasoning_details"].as_array() {
+            self.reasoning_details.extend(details.iter().cloned());
         }
         for call in delta["tool_calls"].as_array().into_iter().flatten() {
             let entry = self
@@ -770,8 +790,6 @@ impl Parser for ChatParser {
         Ok(())
     }
 
-    // ponytail: reasoning_details aren't replayed. Some OpenRouter models may want them
-    // across tool calls; add when one rejects the history or loses context.
     fn finish(self: Box<Self>) -> Result<Turn, String> {
         let Some(reason) = self.finish_reason else {
             return Err(CUT_OFF.to_owned());
@@ -812,6 +830,12 @@ impl Parser for ChatParser {
                 .map(|(id, name, args)| json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}}))
                 .collect();
             item["tool_calls"] = json!(tool_calls);
+            // A model continuing after a tool call needs the reasoning that led to it.
+            if !self.reasoning_details.is_empty() {
+                item["reasoning_details"] = json!(self.reasoning_details);
+            } else if !self.reasoning.is_empty() {
+                item["reasoning"] = json!(self.reasoning);
+            }
         }
         Ok(Turn {
             items: vec![item],
@@ -1025,7 +1049,7 @@ mod tests {
                 effort: true,
             },
             max_output: None,
-            responses_stored: Arc::new(AtomicBool::new(false)),
+            responses_fallback: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -1295,27 +1319,111 @@ mod tests {
     }
 
     #[test]
-    fn responses_falls_back_to_stored_mode_when_store_false_is_refused() {
+    fn responses_gives_up_as_little_privacy_as_each_refusal_requires() {
         let done = sse(&[
             json!({"type": "response.completed", "response": {"status": "completed", "output": []}}),
         ]);
-        let refused =
-            json!({"error": {"message": "Encrypted content is not supported with this model."}})
-                .to_string();
-        let server = mock(vec![(400, refused), (200, done.clone()), (200, done)]);
+        let refusal = |text: &str| json!({"error": {"message": text}}).to_string();
+        let bodies_of = |server: &crate::llm::testing::Mock| -> Vec<Value> {
+            let requests = server.requests.lock().unwrap();
+            requests
+                .iter()
+                .map(|r| serde_json::from_str(&r.2).unwrap())
+                .collect()
+        };
+
+        // Refusing encrypted reasoning keeps store: false, and costs one extra request, once.
+        let server = mock(vec![
+            (
+                400,
+                refusal("Encrypted content is not supported with this model."),
+            ),
+            (200, done.clone()),
+            (200, done.clone()),
+        ]);
         let req = request(Wire::Responses, &server.url, "gpt");
         assert_eq!(run(&req).0.unwrap().unwrap().stop, Stop::EndTurn);
-        assert!(req.responses_stored.load(Ordering::Relaxed));
         run(&req).0.unwrap();
-        let requests = server.requests.lock().unwrap();
-        let bodies: Vec<Value> = requests
-            .iter()
-            .map(|r| serde_json::from_str(&r.2).unwrap())
-            .collect();
-        assert_eq!(bodies.len(), 3, "the refusal costs one extra request, once");
-        assert_eq!(bodies[0]["store"], false);
-        assert!(bodies[1].get("store").is_none() && bodies[1].get("include").is_none());
-        assert!(bodies[2].get("store").is_none());
+        let bodies = bodies_of(&server);
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[0]["include"], json!(["reasoning.encrypted_content"]));
+        assert_eq!(bodies[1]["store"], false, "still not stored");
+        assert!(bodies[1].get("include").is_none());
+        assert!(
+            bodies[2].get("include").is_none(),
+            "remembered for the next request"
+        );
+
+        // A provider that refuses store itself goes on to the default.
+        let server = mock(vec![
+            (400, refusal("Unknown parameter: include")),
+            (400, refusal("store is not supported")),
+            (200, done.clone()),
+        ]);
+        let req = request(Wire::Responses, &server.url, "grok");
+        run(&req).0.unwrap();
+        let bodies = bodies_of(&server);
+        assert_eq!(bodies[1]["store"], false);
+        assert!(bodies[2].get("store").is_none() && bodies[2].get("include").is_none());
+
+        // An unrelated error is just an error, and changes nothing.
+        let server = mock(vec![(400, refusal("Unknown model"))]);
+        let req = request(Wire::Responses, &server.url, "gpt");
+        assert_eq!(run(&req).0.unwrap_err(), "HTTP 400: Unknown model");
+        assert_eq!(req.responses_fallback.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn openrouter_reasoning_goes_back_with_tool_calls_in_arrival_order() {
+        let call =
+            json!([{"index": 0, "id": "c1", "function": {"name": "list_dir", "arguments": "{}"}}]);
+        let first = json!({"type": "reasoning.text", "text": "why", "signature": null, "id": "r1"});
+        let second =
+            json!({"type": "reasoning.text", "text": " more", "signature": "S", "id": "r1"});
+        let secret = json!({"type": "reasoning.encrypted", "data": "abc", "id": "r2"});
+        let body = sse(&[
+            json!({"choices": [{"delta": {"reasoning": "why", "reasoning_details": [first]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"reasoning": " more", "reasoning_details": [second, secret]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": call}, "finish_reason": "tool_calls"}]}),
+        ]);
+        let server = mock(vec![(200, body)]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            turn.items[0]["reasoning_details"],
+            json!([first, second, secret]),
+            "unchanged and in order"
+        );
+        assert!(
+            turn.items[0].get("reasoning").is_none(),
+            "one form or the other"
+        );
+
+        // A model that only gives plain text gets that back instead.
+        let body = sse(&[
+            json!({"choices": [{"delta": {"reasoning": "plain"}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": call}, "finish_reason": "tool_calls"}]}),
+        ]);
+        let server = mock(vec![(200, body)]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
+        assert_eq!(turn.items[0]["reasoning"], "plain");
+
+        // Without a tool call there's nothing to continue, so it isn't sent back.
+        let body = sse(&[
+            json!({"choices": [{"delta": {"reasoning": "plain", "content": "Hi"}, "finish_reason": "stop"}]}),
+        ]);
+        let server = mock(vec![(200, body)]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
+        assert!(turn.items[0].get("reasoning").is_none());
+        assert_eq!(turn.items[0]["content"], "Hi");
     }
 
     #[test]
@@ -1665,7 +1773,7 @@ mod tests {
                 effort: false,
             },
             max_output: None,
-            responses_stored: Arc::new(AtomicBool::new(false)),
+            responses_fallback: Arc::new(AtomicU8::new(0)),
         };
         let (result, _) = run(&request);
         let turn = result.unwrap().unwrap();
