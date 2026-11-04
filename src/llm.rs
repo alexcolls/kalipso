@@ -729,6 +729,8 @@ impl Parser for ResponsesParser {
 #[derive(Default)]
 struct ChatParser {
     text: String,
+    reasoning: String,
+    reasoning_details: Vec<Value>,
     calls: BTreeMap<u64, (String, String, String)>,
     finish_reason: Option<String>,
     input_tokens: u64,
@@ -756,7 +758,12 @@ impl Parser for ChatParser {
             emit(Delta::Text(text.to_owned()));
         }
         if let Some(text) = delta["reasoning"].as_str().filter(|text| !text.is_empty()) {
+            self.reasoning.push_str(text);
             emit(Delta::Thinking(text.to_owned()));
+        }
+        // The docs say the sequence is the chunks' objects in order, unmodified.
+        if let Some(details) = delta["reasoning_details"].as_array() {
+            self.reasoning_details.extend(details.iter().cloned());
         }
         for call in delta["tool_calls"].as_array().into_iter().flatten() {
             let entry = self
@@ -783,8 +790,6 @@ impl Parser for ChatParser {
         Ok(())
     }
 
-    // ponytail: reasoning_details aren't replayed. Some OpenRouter models may want them
-    // across tool calls; add when one rejects the history or loses context.
     fn finish(self: Box<Self>) -> Result<Turn, String> {
         let Some(reason) = self.finish_reason else {
             return Err(CUT_OFF.to_owned());
@@ -825,6 +830,12 @@ impl Parser for ChatParser {
                 .map(|(id, name, args)| json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}}))
                 .collect();
             item["tool_calls"] = json!(tool_calls);
+            // A model continuing after a tool call needs the reasoning that led to it.
+            if !self.reasoning_details.is_empty() {
+                item["reasoning_details"] = json!(self.reasoning_details);
+            } else if !self.reasoning.is_empty() {
+                item["reasoning"] = json!(self.reasoning);
+            }
         }
         Ok(Turn {
             items: vec![item],
@@ -1360,6 +1371,59 @@ mod tests {
         let req = request(Wire::Responses, &server.url, "gpt");
         assert_eq!(run(&req).0.unwrap_err(), "HTTP 400: Unknown model");
         assert_eq!(req.responses_fallback.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn openrouter_reasoning_goes_back_with_tool_calls_in_arrival_order() {
+        let call =
+            json!([{"index": 0, "id": "c1", "function": {"name": "list_dir", "arguments": "{}"}}]);
+        let first = json!({"type": "reasoning.text", "text": "why", "signature": null, "id": "r1"});
+        let second =
+            json!({"type": "reasoning.text", "text": " more", "signature": "S", "id": "r1"});
+        let secret = json!({"type": "reasoning.encrypted", "data": "abc", "id": "r2"});
+        let body = sse(&[
+            json!({"choices": [{"delta": {"reasoning": "why", "reasoning_details": [first]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"reasoning": " more", "reasoning_details": [second, secret]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": call}, "finish_reason": "tool_calls"}]}),
+        ]);
+        let server = mock(vec![(200, body)]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            turn.items[0]["reasoning_details"],
+            json!([first, second, secret]),
+            "unchanged and in order"
+        );
+        assert!(
+            turn.items[0].get("reasoning").is_none(),
+            "one form or the other"
+        );
+
+        // A model that only gives plain text gets that back instead.
+        let body = sse(&[
+            json!({"choices": [{"delta": {"reasoning": "plain"}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": call}, "finish_reason": "tool_calls"}]}),
+        ]);
+        let server = mock(vec![(200, body)]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
+        assert_eq!(turn.items[0]["reasoning"], "plain");
+
+        // Without a tool call there's nothing to continue, so it isn't sent back.
+        let body = sse(&[
+            json!({"choices": [{"delta": {"reasoning": "plain", "content": "Hi"}, "finish_reason": "stop"}]}),
+        ]);
+        let server = mock(vec![(200, body)]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
+        assert!(turn.items[0].get("reasoning").is_none());
+        assert_eq!(turn.items[0]["content"], "Hi");
     }
 
     #[test]
