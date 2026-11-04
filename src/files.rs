@@ -79,12 +79,20 @@ fn list_dir(dir: &Path, show_hidden: bool) -> Vec<(PathBuf, String, bool)> {
 // ponytail: walks on each Ctrl+P. Cache and watch if a huge repo makes this feel slow.
 pub fn all_files(root: &Path) -> Vec<String> {
     let mut walk = WalkBuilder::new(root);
-    walk.hidden(false).require_git(false).filter_entry(|entry| entry.file_name() != ".git");
+    walk.hidden(false)
+        .require_git(false)
+        .filter_entry(|entry| entry.file_name() != ".git");
     let mut files: Vec<String> = walk
         .build()
         .flatten()
         .filter(|entry| entry.path().is_file())
-        .filter_map(|entry| entry.path().strip_prefix(root).ok().map(|path| path.display().to_string()))
+        .filter_map(|entry| {
+            entry
+                .path()
+                .strip_prefix(root)
+                .ok()
+                .map(|path| path.display().to_string())
+        })
         .take(MAX_LISTED_FILES)
         .collect();
     files.sort();
@@ -98,7 +106,10 @@ pub fn safe_join(base: &Path, input: &str) -> Result<PathBuf, String> {
         return Err("name is empty".to_owned());
     }
     let relative = Path::new(input);
-    if !relative.components().all(|part| matches!(part, Component::Normal(_))) {
+    if !relative
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)))
+    {
         return Err("use a plain relative name, without .. or a leading /".to_owned());
     }
     Ok(base.join(relative))
@@ -106,12 +117,21 @@ pub fn safe_join(base: &Path, input: &str) -> Result<PathBuf, String> {
 
 /// Number of entries inside a folder, including hidden and ignored ones.
 pub fn count_inside(dir: &Path) -> usize {
-    WalkBuilder::new(dir).standard_filters(false).build().flatten().count().saturating_sub(1)
+    WalkBuilder::new(dir)
+        .standard_filters(false)
+        .build()
+        .flatten()
+        .count()
+        .saturating_sub(1)
 }
 
 /// Deletes a file or folder. A symlink is removed itself, never what it points to.
 pub fn delete(path: &Path) -> std::io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
+    if fs::symlink_metadata(path)?.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
 }
 
 impl FileTree {
@@ -149,7 +169,12 @@ impl FileTree {
         self.seen.insert(dir.to_path_buf(), modified(dir));
         for (path, name, is_dir) in list_dir(dir, self.show_hidden) {
             let open = is_dir && self.expanded.contains(&path);
-            self.rows.push(Row { path: path.clone(), name, depth, is_dir });
+            self.rows.push(Row {
+                path: path.clone(),
+                name,
+                depth,
+                is_dir,
+            });
             if open {
                 self.add_children(&path, depth + 1);
             }
@@ -172,7 +197,12 @@ impl FileTree {
         }
         self.changed_dirs = changes
             .keys()
-            .flat_map(|path| path.ancestors().skip(1).take_while(|dir| dir.starts_with(&self.root) && *dir != self.root).map(Path::to_path_buf))
+            .flat_map(|path| {
+                path.ancestors()
+                    .skip(1)
+                    .take_while(|dir| dir.starts_with(&self.root) && *dir != self.root)
+                    .map(Path::to_path_buf)
+            })
             .collect();
         self.changes = changes;
         true
@@ -196,7 +226,10 @@ impl FileTree {
     pub fn target_dir(&self) -> PathBuf {
         match self.rows.get(self.selected) {
             Some(row) if row.is_dir => row.path.clone(),
-            Some(row) => row.path.parent().map_or_else(|| self.root.clone(), Path::to_path_buf),
+            Some(row) => row
+                .path
+                .parent()
+                .map_or_else(|| self.root.clone(), Path::to_path_buf),
             None => self.root.clone(),
         }
     }
@@ -210,7 +243,10 @@ impl FileTree {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> FilesCmd {
-        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
             return FilesCmd::None;
         }
         let last = self.rows.len().saturating_sub(1);
@@ -231,17 +267,24 @@ impl FileTree {
             KeyCode::Char('N') => return FilesCmd::NewDir(self.target_dir()),
             _ => {}
         }
-        let Some(row) = self.rows.get(self.selected) else { return FilesCmd::None };
+        let Some(row) = self.rows.get(self.selected) else {
+            return FilesCmd::None;
+        };
         let (path, is_dir, depth) = (row.path.clone(), row.is_dir, row.depth);
         match key.code {
             KeyCode::Enter if !is_dir => return FilesCmd::Open(path),
             KeyCode::Enter => self.toggle(self.selected),
-            KeyCode::Right if is_dir && !self.expanded.contains(&path) => self.toggle(self.selected),
+            KeyCode::Right if is_dir && !self.expanded.contains(&path) => {
+                self.toggle(self.selected)
+            }
             KeyCode::Right if is_dir => self.selected = (self.selected + 1).min(last),
             KeyCode::Left if is_dir && self.expanded.contains(&path) => self.toggle(self.selected),
             KeyCode::Left if depth > 0 => {
                 // Jump up to the parent folder.
-                if let Some(parent) = (0..self.selected).rev().find(|&i| self.rows[i].depth < depth) {
+                if let Some(parent) = (0..self.selected)
+                    .rev()
+                    .find(|&i| self.rows[i].depth < depth)
+                {
                     self.selected = parent;
                 }
             }
@@ -255,7 +298,9 @@ impl FileTree {
     pub fn on_mouse(&mut self, mouse: MouseEvent) -> FilesCmd {
         match mouse.kind {
             MouseEventKind::ScrollUp => self.top = self.top.saturating_sub(3),
-            MouseEventKind::ScrollDown => self.top = (self.top + 3).min(self.rows.len().saturating_sub(1)),
+            MouseEventKind::ScrollDown => {
+                self.top = (self.top + 3).min(self.rows.len().saturating_sub(1))
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 let index = self.top + mouse.row.saturating_sub(self.area.y) as usize;
                 if index < self.rows.len() && mouse.row >= self.area.y {
@@ -303,9 +348,20 @@ impl FileTree {
                     None if self.changed_dirs.contains(&row.path) => (" •", Some(Color::Yellow)),
                     None => ("", None),
                 };
-                let base = Style::new().fg(color.unwrap_or(if row.is_dir { Color::Blue } else { Color::Reset }));
-                let style = if index == self.selected { selected_style } else { base };
-                Line::from(Span::styled(format!("{}{marker}{}{suffix}", "  ".repeat(row.depth), row.name), style))
+                let base = Style::new().fg(color.unwrap_or(if row.is_dir {
+                    Color::Blue
+                } else {
+                    Color::Reset
+                }));
+                let style = if index == self.selected {
+                    selected_style
+                } else {
+                    base
+                };
+                Line::from(Span::styled(
+                    format!("{}{marker}{}{suffix}", "  ".repeat(row.depth), row.name),
+                    style,
+                ))
             })
             .collect();
         frame.render_widget(Paragraph::new(rows), area);
@@ -347,14 +403,19 @@ mod tests {
         press(&mut tree, KeyCode::Right);
         assert_eq!(names(&tree), ["src", "main.rs", "Alpha.txt", "zeta.txt"]);
         press(&mut tree, KeyCode::Down);
-        assert!(matches!(press(&mut tree, KeyCode::Enter), FilesCmd::Open(p) if p.ends_with("src/main.rs")));
+        assert!(
+            matches!(press(&mut tree, KeyCode::Enter), FilesCmd::Open(p) if p.ends_with("src/main.rs"))
+        );
         press(&mut tree, KeyCode::Left);
         assert_eq!(tree.selected, 0, "Left jumps to the parent folder");
         press(&mut tree, KeyCode::Left);
         assert_eq!(names(&tree), ["src", "Alpha.txt", "zeta.txt"]);
 
         press(&mut tree, KeyCode::Char('.'));
-        assert_eq!(names(&tree), ["src", "target", ".gitignore", "Alpha.txt", "zeta.txt"]);
+        assert_eq!(
+            names(&tree),
+            ["src", "target", ".gitignore", "Alpha.txt", "zeta.txt"]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -373,7 +434,10 @@ mod tests {
         fs::write(dir.join("a.txt"), "").unwrap();
         assert!(tree.check_disk());
         assert_eq!(names(&tree), ["sub", "a.txt", "b.txt"]);
-        assert_eq!(tree.rows[tree.selected].name, "b.txt", "selection follows the path");
+        assert_eq!(
+            tree.rows[tree.selected].name, "b.txt",
+            "selection follows the path"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -389,14 +453,20 @@ mod tests {
         fs::write(dir.join(".github/ci.yml"), "").unwrap();
         fs::write(dir.join(".git/config"), "").unwrap();
         fs::write(dir.join("target/out"), "").unwrap();
-        assert_eq!(all_files(&dir), [".github/ci.yml", ".gitignore", "src/deep/a.rs"]);
+        assert_eq!(
+            all_files(&dir),
+            [".github/ci.yml", ".gitignore", "src/deep/a.rs"]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn safe_join_refuses_paths_that_leave_the_base() {
         let base = Path::new("/project");
-        assert_eq!(safe_join(base, "a/b.txt").unwrap(), Path::new("/project/a/b.txt"));
+        assert_eq!(
+            safe_join(base, "a/b.txt").unwrap(),
+            Path::new("/project/a/b.txt")
+        );
         for bad in ["", "  ", "/etc/passwd", "../x", "a/../../x", "a/./b/.."] {
             assert!(safe_join(base, bad).is_err(), "{bad}");
         }

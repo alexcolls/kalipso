@@ -33,12 +33,29 @@ const GIT_CHECK_EVERY: u32 = 2;
 pub enum Event {
     Input(TermEvent),
     Tick,
-    PtyOutput { id: u64, bytes: Vec<u8> },
-    PtyExit { id: u64 },
-    Chat { chat: u64, generation: u64, event: ChatEvent },
-    Models { provider: Provider, purpose: ModelsFor, result: Result<Vec<ModelInfo>, String> },
+    PtyOutput {
+        id: u64,
+        bytes: Vec<u8>,
+    },
+    PtyExit {
+        id: u64,
+    },
+    Chat {
+        chat: u64,
+        generation: u64,
+        event: ChatEvent,
+    },
+    Models {
+        provider: Provider,
+        purpose: ModelsFor,
+        result: Result<Vec<ModelInfo>, String>,
+    },
     Git(Option<git::Snapshot>),
-    SearchDone { query: String, hits: Vec<tools::SearchHit>, more: bool },
+    SearchDone {
+        query: String,
+        hits: Vec<tools::SearchHit>,
+        more: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -93,8 +110,12 @@ pub struct Areas {
 
 impl Areas {
     pub fn compute(area: Rect, zoomed: Option<Focus>) -> Areas {
-        let [main, status] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-        let mut areas = Areas { status, ..Areas::default() };
+        let [main, status] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        let mut areas = Areas {
+            status,
+            ..Areas::default()
+        };
         if let Some(pane) = zoomed {
             *areas.get_mut(pane) = main;
             return areas;
@@ -106,8 +127,15 @@ impl Areas {
         ])
         .areas(main);
         let [editor, terminal] =
-            Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)]).areas(middle);
-        Areas { files, terminal, editor, chat, status }
+            Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .areas(middle);
+        Areas {
+            files,
+            terminal,
+            editor,
+            chat,
+            status,
+        }
     }
 
     pub fn get(&self, pane: Focus) -> Rect {
@@ -143,7 +171,10 @@ pub struct TabHits(Vec<(usize, Rect)>);
 impl TabHits {
     pub fn at(&self, column: u16, row: u16) -> Option<usize> {
         let pos = Position::new(column, row);
-        self.0.iter().find(|(_, rect)| rect.contains(pos)).map(|(index, _)| *index)
+        self.0
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(index, _)| *index)
     }
 }
 
@@ -151,7 +182,9 @@ impl TabHits {
 pub fn tab_line(titles: &[String], active: usize, area: Rect) -> (Line<'static>, TabHits) {
     let width_of = |title: &String| title.width() + 2;
     let mut first = 0;
-    while first < active && titles[first..=active].iter().map(width_of).sum::<usize>() > area.width as usize {
+    while first < active
+        && titles[first..=active].iter().map(width_of).sum::<usize>() > area.width as usize
+    {
         first += 1;
     }
     let mut spans = Vec::new();
@@ -197,8 +230,15 @@ pub enum Then {
 }
 
 pub enum Modal {
-    Input { title: String, input: Buffer, then: Then },
-    Confirm { title: String, then: Then },
+    Input {
+        title: String,
+        input: Buffer,
+        then: Then,
+    },
+    Confirm {
+        title: String,
+        then: Then,
+    },
     Pick {
         title: String,
         items: Vec<String>,
@@ -214,13 +254,28 @@ impl Modal {
     /// A text prompt with `value` selected, so typing replaces it.
     fn input(title: impl Into<String>, value: &str, then: Then) -> Modal {
         let mut input = Buffer::from_text(value);
-        input.edit_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), 1, "");
-        Modal::Input { title: title.into(), input, then }
+        input.edit_key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            1,
+            "",
+        );
+        Modal::Input {
+            title: title.into(),
+            input,
+            then,
+        }
     }
 
     fn pick(title: impl Into<String>, items: Vec<String>, then: Then) -> Modal {
         let shown = (0..items.len()).collect();
-        Modal::Pick { title: title.into(), items, filter: String::new(), shown, selected: 0, then }
+        Modal::Pick {
+            title: title.into(),
+            items,
+            filter: String::new(),
+            shown,
+            selected: 0,
+            then,
+        }
     }
 }
 
@@ -265,8 +320,11 @@ fn fuzzy_score(item: &str, query: &str) -> Option<i64> {
 
 /// Indexes of the items matching `filter`, best first. Ties keep the original order.
 fn rank(items: &[String], filter: &str) -> Vec<usize> {
-    let mut scored: Vec<(i64, usize)> =
-        items.iter().enumerate().filter_map(|(index, item)| fuzzy_score(item, filter).map(|score| (score, index))).collect();
+    let mut scored: Vec<(i64, usize)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| fuzzy_score(item, filter).map(|score| (score, index)))
+        .collect();
     scored.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
     scored.into_iter().map(|(_, index)| index).collect()
 }
@@ -283,13 +341,22 @@ struct TextSelection {
 /// Highlights the text between two screen positions and returns it. It runs like text:
 /// to the end of the first row, whole rows, then up to the end position.
 fn read_selection(buffer: &mut ScreenBuffer, rect: Rect, a: (u16, u16), b: (u16, u16)) -> String {
-    let row_col = |(x, y): (u16, u16)| (y.clamp(rect.y, rect.bottom() - 1), x.clamp(rect.x, rect.right() - 1));
+    let row_col = |(x, y): (u16, u16)| {
+        (
+            y.clamp(rect.y, rect.bottom() - 1),
+            x.clamp(rect.x, rect.right() - 1),
+        )
+    };
     let (a, b) = (row_col(a), row_col(b));
     let (start, end) = if a <= b { (a, b) } else { (b, a) };
     let mut text = String::new();
     for row in start.0..=end.0 {
         let from = if row == start.0 { start.1 } else { rect.x };
-        let to = if row == end.0 { end.1 } else { rect.right() - 1 };
+        let to = if row == end.0 {
+            end.1
+        } else {
+            rect.right() - 1
+        };
         let mut line = String::new();
         let mut skip = 0;
         for col in from..=to {
@@ -365,7 +432,11 @@ impl App {
             return;
         }
         self.git_running = true;
-        let (tx, root, known) = (self.tx.clone(), self.root.clone(), self.editor.known_bases());
+        let (tx, root, known) = (
+            self.tx.clone(),
+            self.root.clone(),
+            self.editor.known_bases(),
+        );
         thread::spawn(move || {
             let _ = tx.send(Event::Git(git::snapshot(&root, &known)));
         });
@@ -383,14 +454,20 @@ impl App {
     }
 
     fn search_prompt(&mut self) {
-        let selected = self.editor.doc().and_then(|doc| doc.buf.selected_text()).filter(|text| !text.contains('\n'));
+        let selected = self
+            .editor
+            .doc()
+            .and_then(|doc| doc.buf.selected_text())
+            .filter(|text| !text.contains('\n'));
         let query = selected.unwrap_or_else(|| self.last_search.clone());
         self.modal = Some(Modal::input("Search project", &query, Then::SearchProject));
     }
 
     fn start_search(&mut self, query: &str) {
         self.last_search = query.to_owned();
-        let Some(pattern) = editor::literal_regex(query) else { return };
+        let Some(pattern) = editor::literal_regex(query) else {
+            return;
+        };
         self.message = Some(format!("Searching for {query}..."));
         let (tx, root, query) = (self.tx.clone(), self.root.clone(), query.to_owned());
         thread::spawn(move || {
@@ -405,15 +482,35 @@ impl App {
         if hits.is_empty() {
             self.message = Some(format!("No matches for {query}."));
         } else if self.modal.is_none() {
-            let title = if more { format!("First {} matches for {query}", hits.len()) } else { format!("{} match{} for {query}", hits.len(), if hits.len() == 1 { "" } else { "es" }) };
-            let items = hits.iter().map(|hit| format!("{}:{}: {}", hit.path, hit.line, hit.text.trim().replace('\t', " "))).collect();
+            let title = if more {
+                format!("First {} matches for {query}", hits.len())
+            } else {
+                format!(
+                    "{} match{} for {query}",
+                    hits.len(),
+                    if hits.len() == 1 { "" } else { "es" }
+                )
+            };
+            let items = hits
+                .iter()
+                .map(|hit| {
+                    format!(
+                        "{}:{}: {}",
+                        hit.path,
+                        hit.line,
+                        hit.text.trim().replace('\t', " ")
+                    )
+                })
+                .collect();
             self.modal = Some(Modal::pick(title, items, Then::OpenMatch(query)));
         }
     }
 
     pub fn handle(&mut self, event: Event) {
         match event {
-            Event::Input(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => self.on_key(key),
+            Event::Input(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
+                self.on_key(key)
+            }
             Event::Input(TermEvent::Mouse(mouse)) => self.on_mouse(mouse),
             Event::Input(TermEvent::Paste(text)) => self.on_paste(&text),
             Event::Input(TermEvent::Resize(..)) => self.needs_draw = true,
@@ -437,7 +534,11 @@ impl App {
                 self.terminals.on_exit(id);
                 self.needs_draw = true;
             }
-            Event::Chat { chat, generation, event } => {
+            Event::Chat {
+                chat,
+                generation,
+                event,
+            } => {
                 if self.chats.on_event(chat, generation, event) {
                     // Show what the agent just did without waiting for the next tick.
                     self.files.refresh();
@@ -445,10 +546,15 @@ impl App {
                 }
                 self.needs_draw = true;
             }
-            Event::Models { provider, purpose, result } => self.on_models(provider, purpose, result),
+            Event::Models {
+                provider,
+                purpose,
+                result,
+            } => self.on_models(provider, purpose, result),
         }
         let chats = &self.chats;
-        self.editor.retain_proposals(|chat, call| chats.approving_call(chat) == Some(call));
+        self.editor
+            .retain_proposals(|chat, call| chats.approving_call(chat) == Some(call));
     }
 
     fn set_focus(&mut self, pane: Focus) {
@@ -489,7 +595,9 @@ impl App {
 
     /// In a proposal tab, y, n and a answer the agent's question and Esc goes back to the chat.
     fn answer_proposal(&mut self, key: KeyEvent) -> bool {
-        let Some(chat) = self.editor.active_proposal() else { return false };
+        let Some(chat) = self.editor.active_proposal() else {
+            return false;
+        };
         if key.code == KeyCode::Esc {
             self.set_focus(Focus::Chat);
             return true;
@@ -497,7 +605,9 @@ impl App {
         if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
             return false;
         }
-        let KeyCode::Char(c) = key.code else { return false };
+        let KeyCode::Char(c) = key.code else {
+            return false;
+        };
         let answer = c.to_ascii_lowercase();
         if !matches!(answer, 'y' | 'n' | 'a') {
             return false;
@@ -515,17 +625,21 @@ impl App {
         let (name, private) = match &doc.path {
             Some(path) => {
                 let shown = self.display_path(path);
-                let private = tools::resolve(&self.root, &shown).map_or(true, |real| tools::is_sensitive(&self.root, &real));
+                let private = tools::resolve(&self.root, &shown)
+                    .map_or(true, |real| tools::is_sensitive(&self.root, &real));
                 (shown, private)
             }
             None => ("an untitled buffer".to_owned(), false),
         };
         let mut label = format!("with {name}:{line}");
-        let mut for_model = format!("[Editor state, for context only: {name} is open with the cursor on line {line}.");
+        let mut for_model = format!(
+            "[Editor state, for context only: {name} is open with the cursor on line {line}."
+        );
         if doc.buf.is_dirty() {
             for_model.push_str(" It has unsaved changes, so the file on disk differs.");
         }
-        if let (Some((start, end)), Some(selected)) = (doc.buf.selection(), doc.buf.selected_text()) {
+        if let (Some((start, end)), Some(selected)) = (doc.buf.selection(), doc.buf.selected_text())
+        {
             let count = end.line - start.line + 1;
             if private {
                 label.push_str(", selection not sent because this file may be private");
@@ -534,7 +648,11 @@ impl App {
                 while !selected.is_char_boundary(cut) {
                     cut -= 1;
                 }
-                let clipped = if cut < selected.len() { "\n[The selection is cut off here.]" } else { "" };
+                let clipped = if cut < selected.len() {
+                    "\n[The selection is cut off here.]"
+                } else {
+                    ""
+                };
                 label.push_str(&format!(", {count} selected lines"));
                 for_model.push_str(&format!(
                     "\nSelected lines {}-{}:\n<selection>\n{}{clipped}\n</selection>",
@@ -558,8 +676,15 @@ impl App {
                 self.message = Some("Copied the last reply.".to_owned());
             }
             ChatCmd::Message(text) => self.message = Some(text),
-            ChatCmd::ViewProposal { chat, call, path, current, proposed } => {
-                self.editor.open_proposal(chat, call, &path, &current, &proposed);
+            ChatCmd::ViewProposal {
+                chat,
+                call,
+                path,
+                current,
+                proposed,
+            } => {
+                self.editor
+                    .open_proposal(chat, call, &path, &current, &proposed);
                 self.set_focus(Focus::Editor);
             }
             ChatCmd::PickModel(chat, provider) => {
@@ -571,12 +696,25 @@ impl App {
 
     fn new_chat(&mut self) {
         let saved = self.chats.resumable();
-        let agents = AGENTS.iter().map(|agent| format!("{}: {}", agent.name, agent.about));
-        let items = agents.chain(saved.iter().map(|chat| chat.label.clone())).collect();
-        self.modal = Some(Modal::pick("New chat: pick an agent", items, Then::ChatAgent(saved)));
+        let agents = AGENTS
+            .iter()
+            .map(|agent| format!("{}: {}", agent.name, agent.about));
+        let items = agents
+            .chain(saved.iter().map(|chat| chat.label.clone()))
+            .collect();
+        self.modal = Some(Modal::pick(
+            "New chat: pick an agent",
+            items,
+            Then::ChatAgent(saved),
+        ));
     }
 
-    fn on_models(&mut self, provider: Provider, purpose: ModelsFor, result: Result<Vec<ModelInfo>, String>) {
+    fn on_models(
+        &mut self,
+        provider: Provider,
+        purpose: ModelsFor,
+        result: Result<Vec<ModelInfo>, String>,
+    ) {
         self.needs_draw = true;
         let models = match result {
             Ok(models) => models,
@@ -603,7 +741,11 @@ impl App {
             ModelsFor::Features => return,
         };
         let items = models.into_iter().map(|model| model.id).collect();
-        self.modal = Some(Modal::pick(format!("{} model", provider.name()), items, then));
+        self.modal = Some(Modal::pick(
+            format!("{} model", provider.name()),
+            items,
+            then,
+        ));
     }
 
     fn load_model_limits(&self, provider: Provider) {
@@ -631,19 +773,29 @@ impl App {
     /// Keys handled before the focused pane sees them, including the terminal pane.
     fn on_global_key(&mut self, key: KeyEvent) -> bool {
         // Not in the terminal pane, where Ctrl+P belongs to the shell.
-        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') && self.focus != Focus::Terminal {
+        if key.modifiers == KeyModifiers::CONTROL
+            && key.code == KeyCode::Char('p')
+            && self.focus != Focus::Terminal
+        {
             self.find_file();
             return true;
         }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
             let worry = match (self.editor.has_unsaved(), self.chats.any_busy()) {
-                (true, true) => Some("Unsaved changes will be lost and running agents stopped. Quit?"),
+                (true, true) => {
+                    Some("Unsaved changes will be lost and running agents stopped. Quit?")
+                }
                 (true, false) => Some("Unsaved changes will be lost. Quit?"),
                 (false, true) => Some("Running agents will be stopped. Quit?"),
                 (false, false) => None,
             };
             match worry {
-                Some(title) => self.modal = Some(Modal::Confirm { title: title.into(), then: Then::Quit }),
+                Some(title) => {
+                    self.modal = Some(Modal::Confirm {
+                        title: title.into(),
+                        then: Then::Quit,
+                    })
+                }
                 None => self.quit(),
             }
             return true;
@@ -702,17 +854,25 @@ impl App {
             Focus::Editor => {
                 let index = self.editor.active;
                 if self.editor.doc().is_some_and(|doc| doc.buf.is_dirty()) {
-                    self.modal = Some(Modal::Confirm { title: "Discard unsaved changes in this tab?".into(), then: Then::CloseDoc(index) });
+                    self.modal = Some(Modal::Confirm {
+                        title: "Discard unsaved changes in this tab?".into(),
+                        then: Then::CloseDoc(index),
+                    });
                 } else {
                     self.editor.close(index);
                 }
             }
             Focus::Terminal => self.terminals.close_tab(),
             Focus::Chat => {
-                let Some(chat) = self.chats.active_chat() else { return };
+                let Some(chat) = self.chats.active_chat() else {
+                    return;
+                };
                 let (id, busy) = (chat.id, chat.is_busy());
                 if busy {
-                    self.modal = Some(Modal::Confirm { title: "This agent is still working. Stop it and close?".into(), then: Then::CloseChat(id) });
+                    self.modal = Some(Modal::Confirm {
+                        title: "This agent is still working. Stop it and close?".into(),
+                        then: Then::CloseChat(id),
+                    });
                 } else {
                     self.chats.close(id);
                 }
@@ -733,33 +893,54 @@ impl App {
     fn open_file(&mut self, path: &std::path::Path) {
         match self.editor.open(path) {
             Ok(()) => self.set_focus(Focus::Editor),
-            Err(err) => self.message = Some(format!("Can't open {}: {err}", self.display_path(path))),
+            Err(err) => {
+                self.message = Some(format!("Can't open {}: {err}", self.display_path(path)))
+            }
         }
     }
 
     fn display_path(&self, path: &std::path::Path) -> String {
-        path.strip_prefix(&self.root).unwrap_or(path).display().to_string()
+        path.strip_prefix(&self.root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
     }
 
     fn run_files_cmd(&mut self, cmd: FilesCmd) {
         let modal = match cmd {
             FilesCmd::None => return,
             FilesCmd::Open(path) => return self.open_file(&path),
-            FilesCmd::NewFile(dir) => Modal::input(format!("New file in {}/", self.display_path(&dir)), "", Then::NewFile(dir)),
-            FilesCmd::NewDir(dir) => Modal::input(format!("New folder in {}/", self.display_path(&dir)), "", Then::NewDir(dir)),
+            FilesCmd::NewFile(dir) => Modal::input(
+                format!("New file in {}/", self.display_path(&dir)),
+                "",
+                Then::NewFile(dir),
+            ),
+            FilesCmd::NewDir(dir) => Modal::input(
+                format!("New folder in {}/", self.display_path(&dir)),
+                "",
+                Then::NewDir(dir),
+            ),
             FilesCmd::Rename(path) => {
-                let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                let name = path
+                    .file_name()
+                    .map_or(String::new(), |n| n.to_string_lossy().into_owned());
                 Modal::input(format!("Rename {name} to"), &name, Then::Rename(path))
             }
             FilesCmd::Delete(path) => {
                 let name = self.display_path(&path);
                 let is_dir = fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
                 let title = if is_dir {
-                    format!("Delete folder {name} and the {} items inside?", files::count_inside(&path))
+                    format!(
+                        "Delete folder {name} and the {} items inside?",
+                        files::count_inside(&path)
+                    )
                 } else {
                     format!("Delete {name}?")
                 };
-                Modal::Confirm { title, then: Then::Delete(path) }
+                Modal::Confirm {
+                    title,
+                    then: Then::Delete(path),
+                }
             }
         };
         self.modal = Some(modal);
@@ -770,13 +951,28 @@ impl App {
             EditorCmd::None => {}
             EditorCmd::Message(text) => self.message = Some(text),
             EditorCmd::Copied(text) => self.copy(text),
-            EditorCmd::SaveAs => self.modal = Some(Modal::input("Save as (relative to project)", "", Then::SaveAs)),
-            EditorCmd::ConfirmOverwrite => {
-                self.modal = Some(Modal::Confirm { title: "File changed on disk. Overwrite it with your version?".into(), then: Then::Overwrite });
+            EditorCmd::SaveAs => {
+                self.modal = Some(Modal::input(
+                    "Save as (relative to project)",
+                    "",
+                    Then::SaveAs,
+                ))
             }
-            EditorCmd::GoToLine => self.modal = Some(Modal::input("Go to line", "", Then::GoToLine)),
+            EditorCmd::ConfirmOverwrite => {
+                self.modal = Some(Modal::Confirm {
+                    title: "File changed on disk. Overwrite it with your version?".into(),
+                    then: Then::Overwrite,
+                });
+            }
+            EditorCmd::GoToLine => {
+                self.modal = Some(Modal::input("Go to line", "", Then::GoToLine))
+            }
             EditorCmd::Find => {
-                let selected = self.editor.doc().and_then(|doc| doc.buf.selected_text()).filter(|text| !text.contains('\n'));
+                let selected = self
+                    .editor
+                    .doc()
+                    .and_then(|doc| doc.buf.selected_text())
+                    .filter(|text| !text.contains('\n'));
                 let query = selected.unwrap_or_else(|| self.editor.find_query.clone());
                 self.modal = Some(Modal::input("Find", &query, Then::Find));
             }
@@ -786,12 +982,17 @@ impl App {
     /// Copies to the internal clipboard and, through the terminal, the system one.
     fn copy(&mut self, text: String) {
         #[cfg(not(test))] // Running the tests shouldn't overwrite the clipboard.
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::clipboard::CopyToClipboard::to_clipboard_from(&text));
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::clipboard::CopyToClipboard::to_clipboard_from(&text)
+        );
         self.clipboard = text;
     }
 
     fn on_modal_key(&mut self, key: KeyEvent) {
-        let Some(modal) = self.modal.as_mut() else { return };
+        let Some(modal) = self.modal.as_mut() else {
+            return;
+        };
         match modal {
             Modal::Confirm { .. } => match key.code {
                 KeyCode::Char('y' | 'Y') => {
@@ -813,7 +1014,13 @@ impl App {
                     input.edit_key(key, 1, &self.clipboard.replace('\n', " "));
                 }
             },
-            Modal::Pick { items, filter, shown, selected, .. } => {
+            Modal::Pick {
+                items,
+                filter,
+                shown,
+                selected,
+                ..
+            } => {
                 let last = shown.len().saturating_sub(1);
                 match key.code {
                     KeyCode::Esc => self.modal = None,
@@ -826,7 +1033,11 @@ impl App {
                         *shown = rank(items, filter);
                         *selected = 0;
                     }
-                    KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
                         filter.push(c);
                         *shown = rank(items, filter);
                         *selected = 0;
@@ -867,8 +1078,11 @@ impl App {
                 }
             }
             Then::OpenMatch(query) => {
-                let pattern = regex::Regex::new(r"^(.*?):(\d+): ").map_err(|err| err.to_string())?;
-                let found = pattern.captures(value).ok_or("That match can't be opened")?;
+                let pattern =
+                    regex::Regex::new(r"^(.*?):(\d+): ").map_err(|err| err.to_string())?;
+                let found = pattern
+                    .captures(value)
+                    .ok_or("That match can't be opened")?;
                 let line = found[2].parse().map_err(|_| "Bad line number")?;
                 let path = self.root.join(&found[1]);
                 self.files.reveal(&path);
@@ -887,36 +1101,64 @@ impl App {
                     self.set_focus(Focus::Chat);
                     return Ok(());
                 }
-                let agent = AGENTS.iter().position(|agent| value.starts_with(agent.name)).ok_or("Unknown agent")?;
-                let ready: Vec<Provider> = Provider::ALL.into_iter().filter(|p| p.api_key().is_some()).collect();
+                let agent = AGENTS
+                    .iter()
+                    .position(|agent| value.starts_with(agent.name))
+                    .ok_or("Unknown agent")?;
+                let ready: Vec<Provider> = Provider::ALL
+                    .into_iter()
+                    .filter(|p| p.api_key().is_some())
+                    .collect();
                 match ready.as_slice() {
                     [] => {
                         let vars: Vec<&str> = Provider::ALL.iter().map(|p| p.key_env()).collect();
-                        return Err(format!("No API keys found. Set one of {} and restart.", vars.join(", ")));
+                        return Err(format!(
+                            "No API keys found. Set one of {} and restart.",
+                            vars.join(", ")
+                        ));
                     }
                     [only] => self.chat_provider_chosen(agent, *only),
                     many => {
                         let items = many.iter().map(|p| p.name().to_owned()).collect();
-                        self.modal = Some(Modal::pick("Pick a provider", items, Then::ChatProvider(agent)));
+                        self.modal = Some(Modal::pick(
+                            "Pick a provider",
+                            items,
+                            Then::ChatProvider(agent),
+                        ));
                     }
                 }
             }
             Then::ChatProvider(agent) => {
-                let provider = Provider::ALL.into_iter().find(|p| p.name() == value).ok_or("Unknown provider")?;
+                let provider = Provider::ALL
+                    .into_iter()
+                    .find(|p| p.name() == value)
+                    .ok_or("Unknown provider")?;
                 self.chat_provider_chosen(agent, provider);
             }
             Then::ChatModel(agent, provider) => {
-                self.chats.save_model(provider, value).map_err(|err| format!("Couldn't save the model choice: {err}"))?;
+                self.chats
+                    .save_model(provider, value)
+                    .map_err(|err| format!("Couldn't save the model choice: {err}"))?;
                 self.create_chat(agent, provider, value.to_owned());
             }
             Then::SwitchModel(id) => {
-                let chat = self.chats.tabs.iter_mut().find(|chat| chat.id == id).ok_or("That chat is closed")?;
+                let chat = self
+                    .chats
+                    .tabs
+                    .iter_mut()
+                    .find(|chat| chat.id == id)
+                    .ok_or("That chat is closed")?;
                 chat.model = value.to_owned();
                 let provider = chat.provider;
-                self.chats.save_model(provider, value).map_err(|err| format!("Couldn't save the model choice: {err}"))?;
+                self.chats
+                    .save_model(provider, value)
+                    .map_err(|err| format!("Couldn't save the model choice: {err}"))?;
             }
             Then::GoToLine => {
-                let line = value.trim().parse().map_err(|_| format!("Not a line number: {value}"))?;
+                let line = value
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("Not a line number: {value}"))?;
                 self.editor.go_to_line(line);
             }
             Then::Find => {
@@ -937,7 +1179,11 @@ impl App {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent).map_err(text)?;
                 }
-                self.editor.doc().ok_or("No file open")?.save_to(&path).map_err(text)?;
+                self.editor
+                    .doc()
+                    .ok_or("No file open")?
+                    .save_to(&path)
+                    .map_err(text)?;
                 self.files.reveal(&path);
             }
             Then::NewFile(dir) => {
@@ -996,7 +1242,13 @@ impl App {
         self.needs_draw = true;
         match &mut self.modal {
             Some(Modal::Input { input, .. }) => input.insert(&text.replace(['\r', '\n'], " ")),
-            Some(Modal::Pick { items, filter, shown, selected, .. }) => {
+            Some(Modal::Pick {
+                items,
+                filter,
+                shown,
+                selected,
+                ..
+            }) => {
                 filter.push_str(&text.replace(['\r', '\n'], " "));
                 *shown = rank(items, filter);
                 *selected = 0;
@@ -1044,7 +1296,12 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let pane = under.filter(|pane| matches!(pane, Focus::Terminal | Focus::Chat));
-                self.selection = pane.map(|pane| TextSelection { pane, start: position, end: position, copy: false });
+                self.selection = pane.map(|pane| TextSelection {
+                    pane,
+                    start: position,
+                    end: position,
+                    copy: false,
+                });
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(selection) = &mut self.selection {
@@ -1061,7 +1318,9 @@ impl App {
     }
 
     fn draw_selection(&mut self, frame: &mut Frame) {
-        let Some(selection) = &mut self.selection else { return };
+        let Some(selection) = &mut self.selection else {
+            return;
+        };
         let rect = self.areas.get(selection.pane).inner(Margin::new(1, 1));
         if rect.is_empty() {
             return;
@@ -1106,8 +1365,14 @@ impl App {
         let (text, style) = match &self.message {
             Some(message) => (message.clone(), Style::new().fg(Color::Yellow)),
             // Not while reviewing a proposal, whose hints already say how to answer.
-            None if self.focus != Focus::Chat && self.chats.any_approving() && !(self.focus == Focus::Editor && self.editor.active_proposal().is_some()) => {
-                ("An agent is waiting for your approval. Alt+4 to answer.".to_owned(), Style::new().fg(Color::Black).bg(Color::Yellow))
+            None if self.focus != Focus::Chat
+                && self.chats.any_approving()
+                && !(self.focus == Focus::Editor && self.editor.active_proposal().is_some()) =>
+            {
+                (
+                    "An agent is waiting for your approval. Alt+4 to answer.".to_owned(),
+                    Style::new().fg(Color::Black).bg(Color::Yellow),
+                )
             }
             None => {
                 let hints = match self.focus {
@@ -1120,7 +1385,10 @@ impl App {
             }
         };
         Line::from(vec![
-            Span::styled(self.focus.title(), Style::new().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(
+                self.focus.title(),
+                Style::new().fg(Color::Black).bg(Color::Cyan),
+            ),
             Span::styled(format!(" {text}"), style),
         ])
     }
@@ -1129,11 +1397,19 @@ impl App {
 /// The bordered frame around a pane, highlighted when focused.
 pub fn pane_block(pane: Focus, focused: bool) -> Block<'static> {
     let (border, title) = if focused {
-        (Style::new().fg(Color::Cyan), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        (
+            Style::new().fg(Color::Cyan),
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )
     } else {
-        (Style::new().fg(Color::DarkGray), Style::new().fg(Color::Gray))
+        (
+            Style::new().fg(Color::DarkGray),
+            Style::new().fg(Color::Gray),
+        )
     };
-    Block::bordered().border_style(border).title(Span::styled(pane.title(), title))
+    Block::bordered()
+        .border_style(border)
+        .title(Span::styled(pane.title(), title))
 }
 
 fn draw_modal(frame: &mut Frame, modal: &Modal) {
@@ -1144,10 +1420,18 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
     };
     // Only rows that can be visible, because a file picker may hold thousands of items.
     let wanted = match modal {
-        Modal::Pick { items, shown, .. } => shown.iter().take(100).map(|&index| items[index].width().min(200) as u16 + 4).max().unwrap_or(0),
+        Modal::Pick { items, shown, .. } => shown
+            .iter()
+            .take(100)
+            .map(|&index| items[index].width().min(200) as u16 + 4)
+            .max()
+            .unwrap_or(0),
         _ => 0,
     };
-    let width = (title.width() as u16 + 6).max(wanted).clamp(44, 96).min(screen.width);
+    let width = (title.width() as u16 + 6)
+        .max(wanted)
+        .clamp(44, 96)
+        .min(screen.width);
     let height = (3 + list_rows).min(screen.height);
     let area = Rect {
         x: screen.x + (screen.width - width) / 2,
@@ -1157,7 +1441,10 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
     };
     let block = Block::bordered()
         .border_style(Style::new().fg(Color::Yellow))
-        .title(Span::styled(format!(" {title} "), Style::new().fg(Color::Yellow)));
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(Color::Yellow),
+        ));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
@@ -1173,10 +1460,19 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
             let display = col_to_display(line, input.cursor.col);
             let left = (display + 1).saturating_sub(inner.width as usize);
             let selected = input.selection().map(|(start, end)| (start.col, end.col));
-            frame.render_widget(Paragraph::new(render_line(line, &[], selected, left, inner.width as usize)), inner);
+            frame.render_widget(
+                Paragraph::new(render_line(line, &[], selected, left, inner.width as usize)),
+                inner,
+            );
             frame.set_cursor_position((inner.x + (display - left) as u16, inner.y));
         }
-        Modal::Pick { items, filter, shown, selected, .. } => {
+        Modal::Pick {
+            items,
+            filter,
+            shown,
+            selected,
+            ..
+        } => {
             let rows = inner.height.saturating_sub(1) as usize;
             let top = (*selected + 1).saturating_sub(rows);
             let mut lines = vec![Line::from(vec![
@@ -1184,10 +1480,17 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
                 Span::raw(filter.clone()),
             ])];
             if shown.is_empty() {
-                lines.push(Line::from(Span::styled("(no matches)", Style::new().fg(Color::DarkGray))));
+                lines.push(Line::from(Span::styled(
+                    "(no matches)",
+                    Style::new().fg(Color::DarkGray),
+                )));
             }
             for (row, &index) in shown.iter().enumerate().skip(top).take(rows) {
-                let style = if row == *selected { Style::new().fg(Color::Black).bg(Color::Yellow) } else { Style::new() };
+                let style = if row == *selected {
+                    Style::new().fg(Color::Black).bg(Color::Yellow)
+                } else {
+                    Style::new()
+                };
                 lines.push(Line::from(Span::styled(items[index].clone(), style)));
             }
             frame.render_widget(Paragraph::new(lines), inner);
@@ -1298,12 +1601,18 @@ mod tests {
         type_text(&mut app, "new.txt");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(dir.join("new.txt").is_file() && !dir.join("old.txt").exists());
-        assert_eq!(app.editor.docs[0].path.as_deref(), Some(dir.join("new.txt").as_path()));
+        assert_eq!(
+            app.editor.docs[0].path.as_deref(),
+            Some(dir.join("new.txt").as_path())
+        );
 
         type_text(&mut app, "d");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(dir.join("new.txt").is_file(), "Enter and Esc must not confirm a delete");
+        assert!(
+            dir.join("new.txt").is_file(),
+            "Enter and Esc must not confirm a delete"
+        );
         type_text(&mut app, "dy");
         assert!(!dir.join("new.txt").exists());
         fs::remove_dir_all(&dir).unwrap();
@@ -1315,7 +1624,10 @@ mod tests {
         press(&mut app, KeyCode::Char('3'), KeyModifiers::ALT);
         press(&mut app, KeyCode::Char('t'), KeyModifiers::ALT);
         press(&mut app, KeyCode::Char('w'), KeyModifiers::ALT);
-        assert!(app.modal.is_none() && app.editor.docs.is_empty(), "clean tab closes straight away");
+        assert!(
+            app.modal.is_none() && app.editor.docs.is_empty(),
+            "clean tab closes straight away"
+        );
 
         press(&mut app, KeyCode::Char('t'), KeyModifiers::ALT);
         type_text(&mut app, "x");
@@ -1342,7 +1654,11 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("tab-number-9"));
         assert!(!text.contains("tab-number-0"));
-        assert_eq!(hits.at(5, 2), Some(8), "14-column tabs: only 8 and 9 fit in 40 columns");
+        assert_eq!(
+            hits.at(5, 2),
+            Some(8),
+            "14-column tabs: only 8 and 9 fit in 40 columns"
+        );
         assert_eq!(hits.at(5, 3), None);
     }
 
@@ -1373,7 +1689,13 @@ mod tests {
         let mut app = test_app();
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        let text = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<String>();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
         for title in ["1 Files", "2 Terminal", "3 Editor", "4 Chat"] {
             assert!(text.contains(title), "missing {title}");
         }
@@ -1400,12 +1722,21 @@ mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         app.handle(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap());
 
-        let Some(Modal::Pick { items, title, .. }) = &app.modal else { panic!("expected results") };
+        let Some(Modal::Pick { items, title, .. }) = &app.modal else {
+            panic!("expected results")
+        };
         assert_eq!(title, "1 match for needle");
-        assert_eq!(items, &["src/a.rs:2: the needle: here"], "ignored and private files stay out");
+        assert_eq!(
+            items,
+            &["src/a.rs:2: the needle: here"],
+            "ignored and private files stay out"
+        );
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Editor);
-        assert_eq!(app.editor.doc().unwrap().buf.selected_text().as_deref(), Some("needle"));
+        assert_eq!(
+            app.editor.doc().unwrap().buf.selected_text().as_deref(),
+            Some("needle")
+        );
         assert_eq!(app.editor.doc().unwrap().buf.selection().unwrap().0.line, 1);
 
         type_text(&mut app, "x");
@@ -1430,26 +1761,64 @@ mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.editor.known_bases(), [(dir.join("sub/a.txt"), None)]);
 
-        let changes = [(dir.join("sub/a.txt"), git::Change::Modified), (dir.join("b.txt"), git::Change::Added)].into_iter().collect();
-        let snapshot = git::Snapshot { head: Some("abc".to_owned()), changes, bases: vec![(dir.join("sub/a.txt"), Some("one\ntwo\nthree\n".to_owned()))] };
+        let changes = [
+            (dir.join("sub/a.txt"), git::Change::Modified),
+            (dir.join("b.txt"), git::Change::Added),
+        ]
+        .into_iter()
+        .collect();
+        let snapshot = git::Snapshot {
+            head: Some("abc".to_owned()),
+            changes,
+            bases: vec![(dir.join("sub/a.txt"), Some("one\ntwo\nthree\n".to_owned()))],
+        };
         app.handle(Event::Git(Some(snapshot)));
         assert!(!app.git_running);
-        assert_eq!(app.editor.known_bases(), [(dir.join("sub/a.txt"), Some("abc".to_owned()))], "not reloaded until HEAD moves");
+        assert_eq!(
+            app.editor.known_bases(),
+            [(dir.join("sub/a.txt"), Some("abc".to_owned()))],
+            "not reloaded until HEAD moves"
+        );
 
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        let rows: Vec<String> = (0..30).map(|y| (0..120).map(|x| terminal.backend().buffer()[(x, y)].symbol().to_owned()).collect()).collect();
-        let row_with = |text: &str| rows.iter().find(|row| row.contains(text)).unwrap_or_else(|| panic!("{text}: {rows:#?}"));
-        assert!(row_with("sub").contains("sub •"), "folders show changes inside");
+        let rows: Vec<String> = (0..30)
+            .map(|y| {
+                (0..120)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_owned())
+                    .collect()
+            })
+            .collect();
+        let row_with = |text: &str| {
+            rows.iter()
+                .find(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
+        };
+        assert!(
+            row_with("sub").contains("sub •"),
+            "folders show changes inside"
+        );
         assert!(rows.iter().any(|row| row.contains("a.txt M")), "{rows:#?}");
         assert!(rows.iter().any(|row| row.contains("b.txt A")), "{rows:#?}");
-        assert!(row_with("new line").contains("2▎new line"), "the changed line is marked");
+        assert!(
+            row_with("new line").contains("2▎new line"),
+            "the changed line is marked"
+        );
         assert!(row_with("one").contains("1 one"), "unchanged lines aren't");
 
         app.handle(Event::Git(None));
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        let text: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
-        assert!(!text.contains("a.txt M"), "marks clear if the repository goes away");
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            !text.contains("a.txt M"),
+            "marks clear if the repository goes away"
+        );
         drop(app);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1460,7 +1829,9 @@ mod tests {
         use crate::llm::testing::{mock, sse};
         use serde_json::json;
         let turn = |events: Vec<serde_json::Value>| {
-            let mut all = vec![json!({"type": "message_start", "message": {"usage": {"input_tokens": 1, "output_tokens": 1}}})];
+            let mut all = vec![
+                json!({"type": "message_start", "message": {"usage": {"input_tokens": 1, "output_tokens": 1}}}),
+            ];
             all.extend(events);
             all.push(json!({"type": "message_stop"}));
             sse(&all)
@@ -1472,8 +1843,14 @@ mod tests {
                 json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
             ])
         };
-        let done = turn(vec![json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}})]);
-        let server = mock(vec![(200, tool("t1", "one\nCHANGED\n")), (200, tool("t2", "second try\n")), (200, done)]);
+        let done = turn(vec![
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+        ]);
+        let server = mock(vec![
+            (200, tool("t1", "one\nCHANGED\n")),
+            (200, tool("t2", "second try\n")),
+            (200, done),
+        ]);
 
         let (mut app, dir) = app_in("proposal");
         let (tx, rx) = mpsc::sync_channel(64);
@@ -1504,18 +1881,35 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        let text: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
         assert!(text.contains("2▎CHANGED"), "the proposed line is marked");
-        assert!(text.contains("Proposed by an agent"), "the status line explains");
+        assert!(
+            text.contains("Proposed by an agent"),
+            "the status line explains"
+        );
 
         // Read-only, and the tab can't touch the real file.
         type_text(&mut app, "x");
         app.handle(Event::Input(TermEvent::Paste("pasted".to_owned())));
         press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(app.editor.docs[0].buf.text(), "one\nCHANGED\n");
-        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\ntwo\n", "nothing written yet");
+        assert_eq!(
+            fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "one\ntwo\n",
+            "nothing written yet"
+        );
         app.handle(Event::Tick);
-        assert_eq!(app.editor.docs[0].buf.text(), "one\nCHANGED\n", "not reloaded from disk");
+        assert_eq!(
+            app.editor.docs[0].buf.text(),
+            "one\nCHANGED\n",
+            "not reloaded from disk"
+        );
 
         // Esc looks away without answering, and v comes back to the same tab.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -1527,7 +1921,10 @@ mod tests {
         press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Chat, "answering returns to the chat");
         settle(&mut app);
-        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\nCHANGED\n");
+        assert_eq!(
+            fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "one\nCHANGED\n"
+        );
 
         // The next question is a new one, so the old proposal is gone.
         assert!(app.chats.tabs[0].is_approving());
@@ -1536,21 +1933,45 @@ mod tests {
         assert_eq!(app.editor.docs[0].buf.text(), "second try\n");
         press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
         settle(&mut app);
-        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\nCHANGED\n", "declined in the editor");
+        assert_eq!(
+            fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "one\nCHANGED\n",
+            "declined in the editor"
+        );
         assert!(app.editor.docs.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn fuzzy_matching_ranks_what_you_probably_meant_first() {
-        let items: Vec<String> = ["tests/app_helpers/mod.rs", "src/chat.rs", "src/app.rs", "docs/a/p/p.md", "README.md"].map(String::from).to_vec();
-        let top = |query: &str| rank(&items, query).first().map(|&index| items[index].as_str());
-        assert_eq!(top("app"), Some("src/app.rs"), "the file name beats a folder name");
+        let items: Vec<String> = [
+            "tests/app_helpers/mod.rs",
+            "src/chat.rs",
+            "src/app.rs",
+            "docs/a/p/p.md",
+            "README.md",
+        ]
+        .map(String::from)
+        .to_vec();
+        let top = |query: &str| {
+            rank(&items, query)
+                .first()
+                .map(|&index| items[index].as_str())
+        };
+        assert_eq!(
+            top("app"),
+            Some("src/app.rs"),
+            "the file name beats a folder name"
+        );
         assert_eq!(top("chat"), Some("src/chat.rs"));
         assert_eq!(top("CHAT"), Some("src/chat.rs"), "case doesn't matter");
         assert_eq!(top("schr"), Some("src/chat.rs"), "letters may have gaps");
         assert_eq!(top("zzz"), None);
-        assert_eq!(rank(&items, ""), [0, 1, 2, 3, 4], "no filter keeps the original order");
+        assert_eq!(
+            rank(&items, ""),
+            [0, 1, 2, 3, 4],
+            "no filter keeps the original order"
+        );
         assert_eq!(fuzzy_score("abc", "cba"), None, "order matters");
     }
 
@@ -1569,37 +1990,61 @@ mod tests {
 
         press(&mut app, KeyCode::Char('1'), KeyModifiers::ALT);
         press(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        let Some(Modal::Pick { items, .. }) = &app.modal else { panic!("expected the picker") };
+        let Some(Modal::Pick { items, .. }) = &app.modal else {
+            panic!("expected the picker")
+        };
         assert!(!items.iter().any(|item| item == "skipped.txt"));
         type_text(&mut app, "ndl");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Editor);
         assert_eq!(app.editor.docs[0].buf.text(), "found it");
-        assert_eq!(app.files.rows[app.files.selected].name, "needle.rs", "the tree reveals it");
+        assert_eq!(
+            app.files.rows[app.files.selected].name, "needle.rs",
+            "the tree reveals it"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn editor_context_describes_what_is_open_and_withholds_private_selections() {
         let (mut app, dir) = app_in("context");
-        assert!(app.editor_context().is_none(), "nothing open, nothing to say");
+        assert!(
+            app.editor_context().is_none(),
+            "nothing open, nothing to say"
+        );
 
         fs::write(dir.join("code.rs"), "one\ntwo\nthree\n").unwrap();
         app.open_file(&dir.join("code.rs"));
         let doc = app.editor.doc().unwrap();
-        doc.buf.set_cursor(crate::editor::Pos { line: 1, col: 0 }, false);
+        doc.buf
+            .set_cursor(crate::editor::Pos { line: 1, col: 0 }, false);
         let context = app.editor_context().unwrap();
         assert_eq!(context.label, "with code.rs:2");
-        assert_eq!(context.for_model, "[Editor state, for context only: code.rs is open with the cursor on line 2.]");
+        assert_eq!(
+            context.for_model,
+            "[Editor state, for context only: code.rs is open with the cursor on line 2.]"
+        );
 
         let doc = app.editor.doc().unwrap();
-        doc.buf.set_cursor(crate::editor::Pos { line: 2, col: 5 }, true);
+        doc.buf
+            .set_cursor(crate::editor::Pos { line: 2, col: 5 }, true);
         let context = app.editor_context().unwrap();
         assert_eq!(context.label, "with code.rs:3, 2 selected lines");
-        assert!(context.for_model.contains("Selected lines 2-3:\n<selection>\ntwo\nthree\n</selection>"), "{}", context.for_model);
+        assert!(
+            context
+                .for_model
+                .contains("Selected lines 2-3:\n<selection>\ntwo\nthree\n</selection>"),
+            "{}",
+            context.for_model
+        );
 
         app.editor.doc().unwrap().buf.insert("x");
-        assert!(app.editor_context().unwrap().for_model.contains("unsaved changes"));
+        assert!(
+            app.editor_context()
+                .unwrap()
+                .for_model
+                .contains("unsaved changes")
+        );
 
         // A selection in a private file must not reach a provider without the read approval.
         for private in [".env", "secret.pem", "ignored.txt"] {
@@ -1607,10 +2052,22 @@ mod tests {
             fs::write(dir.join(private), "API_KEY=hunter2\nmore").unwrap();
             app.open_file(&dir.join(private));
             let doc = app.editor.doc().unwrap();
-            doc.buf.edit_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), 1, "");
+            doc.buf.edit_key(
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                1,
+                "",
+            );
             let context = app.editor_context().unwrap();
-            assert!(!context.for_model.contains("hunter2"), "{private}: {}", context.for_model);
-            assert!(context.label.contains("selection not sent"), "{private}: {}", context.label);
+            assert!(
+                !context.for_model.contains("hunter2"),
+                "{private}: {}",
+                context.for_model
+            );
+            assert!(
+                context.label.contains("selection not sent"),
+                "{private}: {}",
+                context.label
+            );
         }
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1620,7 +2077,11 @@ mod tests {
         let (mut app, dir) = app_in("hugeselect");
         fs::write(dir.join("big.txt"), "日本語".repeat(MAX_CONTEXT_BYTES)).unwrap();
         app.open_file(&dir.join("big.txt"));
-        app.editor.doc().unwrap().buf.edit_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), 1, "");
+        app.editor.doc().unwrap().buf.edit_key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            1,
+            "",
+        );
         let text = app.editor_context().unwrap().for_model;
         assert!(text.contains("cut off") && text.len() < MAX_CONTEXT_BYTES + 300);
         fs::remove_dir_all(&dir).unwrap();
@@ -1634,17 +2095,33 @@ mod tests {
         buffer.set_string(0, 1, "日本語 wide", Style::new());
         buffer.set_string(0, 2, "third", Style::new());
         let rect = Rect::new(0, 0, 12, 3);
-        assert_eq!(read_selection(&mut buffer, rect, (6, 0), (4, 2)), "line\n日本語 wide\nthird");
-        assert_eq!(read_selection(&mut buffer, rect, (4, 2), (6, 0)), "line\n日本語 wide\nthird", "dragging backwards");
+        assert_eq!(
+            read_selection(&mut buffer, rect, (6, 0), (4, 2)),
+            "line\n日本語 wide\nthird"
+        );
+        assert_eq!(
+            read_selection(&mut buffer, rect, (4, 2), (6, 0)),
+            "line\n日本語 wide\nthird",
+            "dragging backwards"
+        );
         assert_eq!(read_selection(&mut buffer, rect, (0, 1), (5, 1)), "日本語");
-        assert_eq!(read_selection(&mut buffer, rect, (0, 0), (99, 99)), "first line\n日本語 wide\nthird", "clamped to the pane");
+        assert_eq!(
+            read_selection(&mut buffer, rect, (0, 0), (99, 99)),
+            "first line\n日本語 wide\nthird",
+            "clamped to the pane"
+        );
         assert_eq!(buffer[(6, 0)].style().bg, Some(SELECTION_BG));
     }
 
     #[test]
     fn dragging_in_the_chat_or_terminal_copies_but_a_plain_click_does_not() {
         let mouse = |kind, column, row| {
-            Event::Input(TermEvent::Mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }))
+            Event::Input(TermEvent::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }))
         };
         let down = MouseEventKind::Down(MouseButton::Left);
         let drag = MouseEventKind::Drag(MouseButton::Left);
@@ -1669,9 +2146,16 @@ mod tests {
         assert_eq!(app.clipboard, "Press");
         assert_eq!(app.message.as_deref(), Some("Copied 5 characters."));
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        assert_eq!(app.message.as_deref(), Some("Copied 5 characters."), "copies once");
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Copied 5 characters."),
+            "copies once"
+        );
 
-        app.handle(Event::Input(TermEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))));
+        app.handle(Event::Input(TermEvent::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        ))));
         assert!(app.selection.is_none(), "a key press clears the highlight");
     }
 
@@ -1704,9 +2188,16 @@ mod tests {
         press(&mut app, KeyCode::Char('1'), KeyModifiers::ALT);
         type_text(&mut app, "n");
         draw_all(&mut app);
-        app.modal = Some(Modal::pick("Pick", vec!["a very long item ".repeat(20); 40], Then::ChatAgent(Vec::new())));
+        app.modal = Some(Modal::pick(
+            "Pick",
+            vec!["a very long item ".repeat(20); 40],
+            Then::ChatAgent(Vec::new()),
+        ));
         draw_all(&mut app);
-        app.modal = Some(Modal::Confirm { title: "A long question ".repeat(20), then: Then::Quit });
+        app.modal = Some(Modal::Confirm {
+            title: "A long question ".repeat(20),
+            then: Then::Quit,
+        });
         draw_all(&mut app);
         drop(app);
         fs::remove_dir_all(&dir).unwrap();

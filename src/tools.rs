@@ -103,15 +103,28 @@ fn definition(name: &str) -> Option<ToolDef> {
         ),
         _ => return None,
     };
-    Some(ToolDef { name, description, schema })
+    Some(ToolDef {
+        name,
+        description,
+        schema,
+    })
 }
 
 /// Checks a model's tool input against the schema. Streamed input isn't validated by
 /// every provider, and a truncated call can still parse as valid JSON.
 pub fn validate(name: &str, input: &Value) -> Result<(), String> {
-    let Some(def) = definition(name) else { return Err(format!("Unknown tool: {name}")) };
-    let Some(object) = input.as_object() else { return Err("Input must be a JSON object".to_owned()) };
-    for field in def.schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+    let Some(def) = definition(name) else {
+        return Err(format!("Unknown tool: {name}"));
+    };
+    let Some(object) = input.as_object() else {
+        return Err("Input must be a JSON object".to_owned());
+    };
+    for field in def.schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
         if !object.contains_key(field) {
             return Err(format!("Missing required field: {field}"));
         }
@@ -125,7 +138,10 @@ pub fn validate(name: &str, input: &Value) -> Result<(), String> {
             _ => true,
         };
         if !ok {
-            return Err(format!("Field {field} must be a {}", wanted.unwrap_or("value")));
+            return Err(format!(
+                "Field {field} must be a {}",
+                wanted.unwrap_or("value")
+            ));
         }
     }
     Ok(())
@@ -140,8 +156,17 @@ fn text_field<'a>(input: &'a Value, field: &str) -> &'a str {
 pub fn resolve(root: &Path, input: &str) -> Result<PathBuf, String> {
     let outside = || format!("{input} is outside the project");
     let path = Path::new(if input.is_empty() { "." } else { input });
-    let path = if path.is_absolute() { path.strip_prefix(root).map_err(|_| outside())? } else { path };
-    if path.components().any(|part| matches!(part, Component::ParentDir | Component::Prefix(_) | Component::RootDir)) {
+    let path = if path.is_absolute() {
+        path.strip_prefix(root).map_err(|_| outside())?
+    } else {
+        path
+    };
+    if path.components().any(|part| {
+        matches!(
+            part,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    }) {
         return Err(outside());
     }
     // The deepest part that exists decides where this really points.
@@ -172,15 +197,23 @@ pub fn resolve(root: &Path, input: &str) -> Result<PathBuf, String> {
 
 fn is_secret_name(name: &str) -> bool {
     let lower = name.to_lowercase();
-    if matches!(lower.as_str(), ".env.example" | ".env.sample" | ".env.template") {
+    if matches!(
+        lower.as_str(),
+        ".env.example" | ".env.sample" | ".env.template"
+    ) {
         return false;
     }
     lower.starts_with(".env")
         || lower.starts_with("id_rsa")
         || lower.starts_with("id_ed25519")
         || lower.starts_with("id_ecdsa")
-        || [".pem", ".key", ".p12", ".pfx"].iter().any(|ext| lower.ends_with(ext))
-        || matches!(lower.as_str(), ".netrc" | ".npmrc" | ".pypirc" | "credentials")
+        || [".pem", ".key", ".p12", ".pfx"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+        || matches!(
+            lower.as_str(),
+            ".netrc" | ".npmrc" | ".pypirc" | "credentials"
+        )
 }
 
 fn is_gitignored(root: &Path, path: &Path) -> bool {
@@ -224,7 +257,13 @@ pub enum Gate {
 
 /// Decides whether a tool call may run. `tools` is what the agent is allowed to use and
 /// `allowed` is what the user said "always" to in this chat tab.
-pub fn gate(tools: &[&str], name: &str, input: &Value, root: &Path, allowed: &HashSet<String>) -> Gate {
+pub fn gate(
+    tools: &[&str],
+    name: &str,
+    input: &Value,
+    root: &Path,
+    allowed: &HashSet<String>,
+) -> Gate {
     if !tools.contains(&name) {
         return Gate::Deny(format!("This agent can't use {name}."));
     }
@@ -232,9 +271,10 @@ pub fn gate(tools: &[&str], name: &str, input: &Value, root: &Path, allowed: &Ha
     match name {
         "read_file" => match path_of("path") {
             Err(err) => Gate::Deny(err),
-            Ok(path) if is_sensitive(root, &path) => {
-                Gate::Ask(format!("Read a file that may be private: {}", text_field(input, "path")))
-            }
+            Ok(path) if is_sensitive(root, &path) => Gate::Ask(format!(
+                "Read a file that may be private: {}",
+                text_field(input, "path")
+            )),
             Ok(_) => Gate::Run,
         },
         "list_dir" | "search" => match path_of("path") {
@@ -270,8 +310,17 @@ pub fn gate(tools: &[&str], name: &str, input: &Value, root: &Path, allowed: &Ha
 pub fn diff_preview(old: &str, new: &str) -> String {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
-    let start = old_lines.iter().zip(&new_lines).take_while(|(a, b)| a == b).count();
-    let tail = old_lines[start..].iter().rev().zip(new_lines[start..].iter().rev()).take_while(|(a, b)| a == b).count();
+    let start = old_lines
+        .iter()
+        .zip(&new_lines)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let tail = old_lines[start..]
+        .iter()
+        .rev()
+        .zip(new_lines[start..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
     let mut out = String::new();
     for line in &old_lines[start..old_lines.len() - tail] {
         out.push_str(&format!("-{line}\n"));
@@ -295,25 +344,39 @@ fn apply_edit(text: &str, input: &Value) -> Result<String, String> {
     let count = text.matches(old).count();
     let replace_all = input["replace_all"].as_bool().unwrap_or(false);
     match (count, replace_all) {
-        (0, _) => Err("old_string was not found in the file. Read the file again and copy the text exactly.".to_owned()),
+        (0, _) => Err(
+            "old_string was not found in the file. Read the file again and copy the text exactly."
+                .to_owned(),
+        ),
         (1, _) | (_, true) => Ok(text.replace(old, new)),
-        (n, false) => Err(format!("old_string matches {n} places. Include more surrounding text, or set replace_all.")),
+        (n, false) => Err(format!(
+            "old_string matches {n} places. Include more surrounding text, or set replace_all."
+        )),
     }
 }
 
 /// A file change's current and proposed contents.
 fn contents_of_change(name: &str, input: &Value, path: &Path) -> Result<(String, String), String> {
     if name == "write_file" {
-        let old = if path.exists() { load_text(path).map(|(text, _)| text).unwrap_or_default() } else { String::new() };
+        let old = if path.exists() {
+            load_text(path).map(|(text, _)| text).unwrap_or_default()
+        } else {
+            String::new()
+        };
         return Ok((old, text_field(input, "contents").to_owned()));
     }
-    let (old, _) = load_text(path).map_err(|err| format!("{}: {err}", text_field(input, "path")))?;
+    let (old, _) =
+        load_text(path).map_err(|err| format!("{}: {err}", text_field(input, "path")))?;
     let new = apply_edit(&old, input)?;
     Ok((old, new))
 }
 
 /// Where a file change would land, with the file's current and proposed contents.
-pub fn proposal(name: &str, input: &Value, root: &Path) -> Result<(PathBuf, String, String), String> {
+pub fn proposal(
+    name: &str,
+    input: &Value,
+    root: &Path,
+) -> Result<(PathBuf, String, String), String> {
     let path = resolve(root, text_field(input, "path"))?;
     let (old, new) = contents_of_change(name, input, &path)?;
     Ok((path, old, new))
@@ -332,11 +395,17 @@ pub struct ToolOutput {
 }
 
 fn ok(text: String) -> ToolOutput {
-    ToolOutput { text, is_error: false }
+    ToolOutput {
+        text,
+        is_error: false,
+    }
 }
 
 fn error(text: impl Into<String>) -> ToolOutput {
-    ToolOutput { text: text.into(), is_error: true }
+    ToolOutput {
+        text: text.into(),
+        is_error: true,
+    }
 }
 
 /// Runs a tool that has already passed [`validate`] and [`gate`].
@@ -359,7 +428,9 @@ fn read_file(input: &Value, root: &Path) -> Result<String, String> {
     let (text, _) = load_text(&path).map_err(|err| format!("{shown}: {err}"))?;
     let total = text.lines().count();
     let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
-    let limit = input["limit"].as_u64().map_or(READ_MAX_LINES, |n| (n as usize).min(READ_MAX_LINES));
+    let limit = input["limit"]
+        .as_u64()
+        .map_or(READ_MAX_LINES, |n| (n as usize).min(READ_MAX_LINES));
     let mut out = String::new();
     let mut shown_lines = 0;
     for (index, line) in text.lines().enumerate().skip(offset - 1).take(limit) {
@@ -372,7 +443,9 @@ fn read_file(input: &Value, root: &Path) -> Result<String, String> {
     }
     let last = offset - 1 + shown_lines;
     if last < total {
-        out.push_str(&format!("[Showing lines {offset}-{last} of {total}. Use offset to read more.]\n"));
+        out.push_str(&format!(
+            "[Showing lines {offset}-{last} of {total}. Use offset to read more.]\n"
+        ));
     }
     if out.is_empty() {
         out.push_str("(empty file)\n");
@@ -399,7 +472,11 @@ fn list_dir(input: &Value, root: &Path) -> Result<String, String> {
         .filter(|entry| entry.depth() == 1)
         .map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.path().is_dir() { format!("{name}/") } else { name }
+            if entry.path().is_dir() {
+                format!("{name}/")
+            } else {
+                name
+            }
         })
         .collect();
     names.sort();
@@ -409,7 +486,11 @@ fn list_dir(input: &Value, root: &Path) -> Result<String, String> {
     if total > LIST_MAX {
         out.push_str(&format!("\n[Showing {LIST_MAX} of {total} entries.]"));
     }
-    Ok(if out.is_empty() { "(empty folder)".to_owned() } else { out })
+    Ok(if out.is_empty() {
+        "(empty folder)".to_owned()
+    } else {
+        out
+    })
 }
 
 pub struct SearchHit {
@@ -420,25 +501,43 @@ pub struct SearchHit {
 
 /// Matches in text files under `base`, up to `limit`. Gitignored and private files are
 /// skipped. The bool says whether there were more.
-pub fn search_files(root: &Path, base: &Path, pattern: &regex::Regex, limit: usize) -> (Vec<SearchHit>, bool) {
+pub fn search_files(
+    root: &Path,
+    base: &Path,
+    pattern: &regex::Regex,
+    limit: usize,
+) -> (Vec<SearchHit>, bool) {
     let mut hits = Vec::new();
     for entry in walker(base).build().flatten() {
         let path = entry.path();
         if !entry.file_type().is_some_and(|kind| kind.is_file()) || is_sensitive(root, path) {
             continue;
         }
-        if entry.metadata().map_or(true, |meta| meta.len() > SEARCH_MAX_FILE_BYTES) {
+        if entry
+            .metadata()
+            .map_or(true, |meta| meta.len() > SEARCH_MAX_FILE_BYTES)
+        {
             continue;
         }
-        let Ok(text) = fs::read_to_string(path) else { continue };
-        let shown = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let shown = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         for (index, line) in text.lines().enumerate() {
             if pattern.is_match(line) {
                 if hits.len() == limit {
                     return (hits, true);
                 }
                 let text = line.chars().take(SEARCH_MAX_LINE_CHARS).collect();
-                hits.push(SearchHit { path: shown.clone(), line: index + 1, text });
+                hits.push(SearchHit {
+                    path: shown.clone(),
+                    line: index + 1,
+                    text,
+                });
             }
         }
     }
@@ -446,15 +545,21 @@ pub fn search_files(root: &Path, base: &Path, pattern: &regex::Regex, limit: usi
 }
 
 fn search(input: &Value, root: &Path) -> Result<String, String> {
-    let pattern = regex::Regex::new(text_field(input, "pattern")).map_err(|err| format!("Invalid pattern: {err}"))?;
+    let pattern = regex::Regex::new(text_field(input, "pattern"))
+        .map_err(|err| format!("Invalid pattern: {err}"))?;
     let base = resolve(root, text_field(input, "path"))?;
     let (hits, more) = search_files(root, &base, &pattern, SEARCH_MAX_MATCHES);
     if hits.is_empty() {
         return Ok("No matches.".to_owned());
     }
-    let mut out: String = hits.iter().map(|hit| format!("{}:{}: {}\n", hit.path, hit.line, hit.text)).collect();
+    let mut out: String = hits
+        .iter()
+        .map(|hit| format!("{}:{}: {}\n", hit.path, hit.line, hit.text))
+        .collect();
     if more {
-        out.push_str(&format!("[Stopped at {SEARCH_MAX_MATCHES} matches. Narrow the search.]\n"));
+        out.push_str(&format!(
+            "[Stopped at {SEARCH_MAX_MATCHES} matches. Narrow the search.]\n"
+        ));
     }
     Ok(out)
 }
@@ -492,7 +597,9 @@ struct Capture {
 
 impl Capture {
     fn push(&mut self, bytes: &[u8]) {
-        let room = CAPTURE_END_BYTES.saturating_sub(self.head.len()).min(bytes.len());
+        let room = CAPTURE_END_BYTES
+            .saturating_sub(self.head.len())
+            .min(bytes.len());
         self.head.extend_from_slice(&bytes[..room]);
         self.tail.extend(&bytes[room..]);
         while self.tail.len() > CAPTURE_END_BYTES {
@@ -504,7 +611,10 @@ impl Capture {
     fn text(&self) -> String {
         let mut out = String::from_utf8_lossy(&self.head).into_owned();
         if self.dropped > 0 {
-            out.push_str(&format!("\n[... {} bytes of output omitted ...]\n", self.dropped));
+            out.push_str(&format!(
+                "\n[... {} bytes of output omitted ...]\n",
+                self.dropped
+            ));
         }
         let (a, b) = self.tail.as_slices();
         out.push_str(&String::from_utf8_lossy(&[a, b].concat()));
@@ -540,8 +650,14 @@ fn run_command(command: &str, root: &Path, cancel: &AtomicBool) -> ToolOutput {
     let capture = Arc::new(Mutex::new(Capture::default()));
     let mut readers = Vec::new();
     let pipes: [Option<Box<dyn Read + Send>>; 2] = [
-        child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-        child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
     ];
     for pipe in pipes.into_iter().flatten() {
         let capture = capture.clone();
@@ -569,7 +685,10 @@ fn run_command(command: &str, root: &Path, cancel: &AtomicBool) -> ToolOutput {
             if cancel.load(Ordering::Relaxed) {
                 stopped_because = Some("Stopped by the user.".to_owned());
             } else if started.elapsed() > COMMAND_TIMEOUT {
-                stopped_because = Some(format!("Timed out after {} seconds.", COMMAND_TIMEOUT.as_secs()));
+                stopped_because = Some(format!(
+                    "Timed out after {} seconds.",
+                    COMMAND_TIMEOUT.as_secs()
+                ));
             }
             if stopped_because.is_some() {
                 kill_group(child.id());
@@ -621,7 +740,14 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
-    const ALL: [&str; 6] = ["read_file", "list_dir", "search", "write_file", "edit_file", "run_command"];
+    const ALL: [&str; 6] = [
+        "read_file",
+        "list_dir",
+        "search",
+        "write_file",
+        "edit_file",
+        "run_command",
+    ];
 
     fn no_allowed() -> HashSet<String> {
         HashSet::new()
@@ -641,22 +767,50 @@ mod tests {
         symlink(&outside, root.join("escape")).unwrap();
         symlink(outside.join("nothing-yet"), root.join("dangling")).unwrap();
 
-        assert_eq!(resolve(&root, "a/b/new.txt").unwrap(), root.join("a/b/new.txt"));
+        assert_eq!(
+            resolve(&root, "a/b/new.txt").unwrap(),
+            root.join("a/b/new.txt")
+        );
         assert_eq!(resolve(&root, "").unwrap(), root);
         assert_eq!(resolve(&root, "sub").unwrap(), root.join("sub"));
-        assert_eq!(resolve(&root, root.join("sub").to_str().unwrap()).unwrap(), root.join("sub"));
+        assert_eq!(
+            resolve(&root, root.join("sub").to_str().unwrap()).unwrap(),
+            root.join("sub")
+        );
 
-        for bad in ["../x", "sub/../../x", "/etc/passwd", "escape/secret.txt", "escape/new.txt", "dangling"] {
+        for bad in [
+            "../x",
+            "sub/../../x",
+            "/etc/passwd",
+            "escape/secret.txt",
+            "escape/new.txt",
+            "dangling",
+        ] {
             assert!(resolve(&root, bad).is_err(), "{bad} should be refused");
         }
 
         // The refusal reaches the tool level too, for both reading and writing.
-        let read = gate(&ALL, "read_file", &json!({"path": "escape/secret.txt"}), &root, &no_allowed());
+        let read = gate(
+            &ALL,
+            "read_file",
+            &json!({"path": "escape/secret.txt"}),
+            &root,
+            &no_allowed(),
+        );
         assert!(matches!(read, Gate::Deny(_)));
         let mut allowed = no_allowed();
         allowed.insert("write_file".to_owned());
-        let write = gate(&ALL, "write_file", &json!({"path": "escape/x", "contents": ""}), &root, &allowed);
-        assert!(matches!(write, Gate::Deny(_)), "an 'always' answer must not widen the sandbox");
+        let write = gate(
+            &ALL,
+            "write_file",
+            &json!({"path": "escape/x", "contents": ""}),
+            &root,
+            &allowed,
+        );
+        assert!(
+            matches!(write, Gate::Deny(_)),
+            "an 'always' answer must not widen the sandbox"
+        );
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&outside).unwrap();
     }
@@ -669,15 +823,33 @@ mod tests {
         let write = json!({"path": "a.txt", "contents": "x"});
         let edit = json!({"path": "a.txt", "old_string": "a", "new_string": "b"});
         let command = json!({"command": "true"});
-        assert!(matches!(gate(&review, "write_file", &write, &root, &no_allowed()), Gate::Deny(_)));
-        assert!(matches!(gate(&review, "edit_file", &edit, &root, &no_allowed()), Gate::Deny(_)));
-        assert!(matches!(gate(&review, "run_command", &command, &root, &no_allowed()), Gate::Ask(_)));
-        assert!(matches!(gate(&design, "run_command", &command, &root, &no_allowed()), Gate::Deny(_)));
-        assert!(matches!(gate(&design, "write_file", &write, &root, &no_allowed()), Gate::Ask(_)));
+        assert!(matches!(
+            gate(&review, "write_file", &write, &root, &no_allowed()),
+            Gate::Deny(_)
+        ));
+        assert!(matches!(
+            gate(&review, "edit_file", &edit, &root, &no_allowed()),
+            Gate::Deny(_)
+        ));
+        assert!(matches!(
+            gate(&review, "run_command", &command, &root, &no_allowed()),
+            Gate::Ask(_)
+        ));
+        assert!(matches!(
+            gate(&design, "run_command", &command, &root, &no_allowed()),
+            Gate::Deny(_)
+        ));
+        assert!(matches!(
+            gate(&design, "write_file", &write, &root, &no_allowed()),
+            Gate::Ask(_)
+        ));
         // Even if the user said "always" somewhere, a missing tool stays missing.
         let mut allowed = no_allowed();
         allowed.insert("run_command".to_owned());
-        assert!(matches!(gate(&design, "run_command", &command, &root, &allowed), Gate::Deny(_)));
+        assert!(matches!(
+            gate(&design, "run_command", &command, &root, &allowed),
+            Gate::Deny(_)
+        ));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -689,24 +861,61 @@ mod tests {
         let write = json!({"path": "a.txt", "contents": "x"});
         let read = |path: &str| json!({"path": path});
 
-        assert!(matches!(gate(&ALL, "write_file", &write, &root, &allowed), Gate::Ask(_)));
+        assert!(matches!(
+            gate(&ALL, "write_file", &write, &root, &allowed),
+            Gate::Ask(_)
+        ));
         allowed.insert("write_file".to_owned());
         assert_eq!(gate(&ALL, "write_file", &write, &root, &allowed), Gate::Run);
 
-        for secret in [".env", ".env.local", "config/.env", "server.pem", "id_rsa", ".git/config", "ignored.txt", "build/out.bin"] {
+        for secret in [
+            ".env",
+            ".env.local",
+            "config/.env",
+            "server.pem",
+            "id_rsa",
+            ".git/config",
+            "ignored.txt",
+            "build/out.bin",
+        ] {
             let write = json!({"path": secret, "contents": "x"});
-            assert!(matches!(gate(&ALL, "write_file", &write, &root, &allowed), Gate::Ask(_)), "write {secret}");
-            assert!(matches!(gate(&ALL, "read_file", &read(secret), &root, &allowed), Gate::Ask(_)), "read {secret}");
+            assert!(
+                matches!(
+                    gate(&ALL, "write_file", &write, &root, &allowed),
+                    Gate::Ask(_)
+                ),
+                "write {secret}"
+            );
+            assert!(
+                matches!(
+                    gate(&ALL, "read_file", &read(secret), &root, &allowed),
+                    Gate::Ask(_)
+                ),
+                "read {secret}"
+            );
         }
-        for plain in ["a.txt", ".env.example", "src/environment.rs", ".github/ci.yml"] {
-            assert_eq!(gate(&ALL, "read_file", &read(plain), &root, &allowed), Gate::Run, "read {plain}");
+        for plain in [
+            "a.txt",
+            ".env.example",
+            "src/environment.rs",
+            ".github/ci.yml",
+        ] {
+            assert_eq!(
+                gate(&ALL, "read_file", &read(plain), &root, &allowed),
+                Gate::Run,
+                "read {plain}"
+            );
         }
         fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn validate_rejects_truncated_and_mistyped_input() {
-        assert!(validate("write_file", &json!({"path": "a"})).unwrap_err().contains("contents"));
+        assert!(
+            validate("write_file", &json!({"path": "a"}))
+                .unwrap_err()
+                .contains("contents")
+        );
         assert!(validate("write_file", &json!({"path": 5, "contents": ""})).is_err());
         assert!(validate("read_file", &json!({"path": "a", "offset": "1"})).is_err());
         assert!(validate("read_file", &json!("a")).is_err());
@@ -718,29 +927,67 @@ mod tests {
     #[test]
     fn file_tools_read_write_and_edit_precisely() {
         let root = project("files");
-        let done = go("write_file", json!({"path": "src/a.txt", "contents": "one\ntwo\ntwo\n"}), &root);
+        let done = go(
+            "write_file",
+            json!({"path": "src/a.txt", "contents": "one\ntwo\ntwo\n"}),
+            &root,
+        );
         assert!(!done.is_error, "{}", done.text);
-        assert_eq!(fs::read_to_string(root.join("src/a.txt")).unwrap(), "one\ntwo\ntwo\n");
+        assert_eq!(
+            fs::read_to_string(root.join("src/a.txt")).unwrap(),
+            "one\ntwo\ntwo\n"
+        );
 
         let read = go("read_file", json!({"path": "src/a.txt"}), &root);
         assert_eq!(read.text, "1\tone\n2\ttwo\n3\ttwo\n");
-        let part = go("read_file", json!({"path": "src/a.txt", "offset": 2, "limit": 1}), &root);
+        let part = go(
+            "read_file",
+            json!({"path": "src/a.txt", "offset": 2, "limit": 1}),
+            &root,
+        );
         assert!(part.text.starts_with("2\ttwo\n") && part.text.contains("Showing lines 2-2 of 3"));
 
-        let ambiguous = go("edit_file", json!({"path": "src/a.txt", "old_string": "two", "new_string": "x"}), &root);
+        let ambiguous = go(
+            "edit_file",
+            json!({"path": "src/a.txt", "old_string": "two", "new_string": "x"}),
+            &root,
+        );
         assert!(ambiguous.is_error && ambiguous.text.contains("2 places"));
-        assert_eq!(fs::read_to_string(root.join("src/a.txt")).unwrap(), "one\ntwo\ntwo\n", "failed edit changes nothing");
+        assert_eq!(
+            fs::read_to_string(root.join("src/a.txt")).unwrap(),
+            "one\ntwo\ntwo\n",
+            "failed edit changes nothing"
+        );
 
-        let all = go("edit_file", json!({"path": "src/a.txt", "old_string": "two", "new_string": "x", "replace_all": true}), &root);
+        let all = go(
+            "edit_file",
+            json!({"path": "src/a.txt", "old_string": "two", "new_string": "x", "replace_all": true}),
+            &root,
+        );
         assert!(!all.is_error);
-        assert_eq!(fs::read_to_string(root.join("src/a.txt")).unwrap(), "one\nx\nx\n");
+        assert_eq!(
+            fs::read_to_string(root.join("src/a.txt")).unwrap(),
+            "one\nx\nx\n"
+        );
 
-        let missing = go("edit_file", json!({"path": "src/a.txt", "old_string": "zzz", "new_string": "x"}), &root);
+        let missing = go(
+            "edit_file",
+            json!({"path": "src/a.txt", "old_string": "zzz", "new_string": "x"}),
+            &root,
+        );
         assert!(missing.is_error && missing.text.contains("not found"));
 
         fs::write(root.join("crlf.txt"), "a\r\nb\r\n").unwrap();
-        go("edit_file", json!({"path": "crlf.txt", "old_string": "a\nb", "new_string": "c\nd"}), &root);
-        assert_eq!(fs::read(root.join("crlf.txt")).unwrap(), b"c\r\nd\r\n", "CRLF survives an edit");
+        go(
+            "edit_file",
+            json!({"path": "crlf.txt", "old_string": "a\nb", "new_string": "c\nd"}),
+            &root,
+        );
+        assert_eq!(
+            fs::read(root.join("crlf.txt")).unwrap(),
+            b"c\r\nd\r\n",
+            "CRLF survives an edit"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -758,12 +1005,18 @@ mod tests {
 
         let found = go("search", json!({"pattern": "need.e"}), &root);
         assert_eq!(found.text, "plain.txt:2: the needle here\n");
-        assert_eq!(go("search", json!({"pattern": "absent"}), &root).text, "No matches.");
+        assert_eq!(
+            go("search", json!({"pattern": "absent"}), &root).text,
+            "No matches."
+        );
         assert!(go("search", json!({"pattern": "("}), &root).is_error);
 
         let listed = go("list_dir", json!({}), &root).text;
         assert!(listed.contains("plain.txt") && listed.contains("sub/"));
-        assert!(!listed.contains(".git\n") && !listed.contains("ignored.txt"), "{listed}");
+        assert!(
+            !listed.contains(".git\n") && !listed.contains("ignored.txt"),
+            "{listed}"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -772,15 +1025,32 @@ mod tests {
         let root = project("commands");
         // SAFETY: tests read this variable only through the child process of this test.
         unsafe { std::env::set_var("OPENROUTER_API_KEY", "sk-should-not-leak") };
-        let out = go("run_command", json!({"command": "echo hi; echo oops >&2; pwd; echo key=$OPENROUTER_API_KEY"}), &root);
+        let out = go(
+            "run_command",
+            json!({"command": "echo hi; echo oops >&2; pwd; echo key=$OPENROUTER_API_KEY"}),
+            &root,
+        );
         assert!(!out.is_error);
-        assert!(out.text.contains("hi") && out.text.contains("oops") && out.text.contains(root.to_str().unwrap()));
-        assert!(out.text.contains("key=\n") || out.text.ends_with("key="), "{}", out.text);
+        assert!(
+            out.text.contains("hi")
+                && out.text.contains("oops")
+                && out.text.contains(root.to_str().unwrap())
+        );
+        assert!(
+            out.text.contains("key=\n") || out.text.ends_with("key="),
+            "{}",
+            out.text
+        );
         assert!(!out.text.contains("sk-should-not-leak"));
 
         let failed = go("run_command", json!({"command": "echo bad; exit 3"}), &root);
-        assert!(failed.is_error && failed.text.contains("bad") && failed.text.contains("Exit code 3"));
-        assert_eq!(go("run_command", json!({"command": "true"}), &root).text, "(no output)");
+        assert!(
+            failed.is_error && failed.text.contains("bad") && failed.text.contains("Exit code 3")
+        );
+        assert_eq!(
+            go("run_command", json!({"command": "true"}), &root).text,
+            "(no output)"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -798,9 +1068,15 @@ mod tests {
         cancel.store(true, Ordering::Relaxed);
         let out = worker.join().unwrap();
         assert!(out.is_error && out.text.contains("Stopped by the user"));
-        assert!(started.elapsed() < Duration::from_secs(5), "should stop promptly");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "should stop promptly"
+        );
         thread::sleep(Duration::from_millis(2300));
-        assert!(!marker.exists(), "background children must die with the command");
+        assert!(
+            !marker.exists(),
+            "background children must die with the command"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -808,9 +1084,17 @@ mod tests {
     fn a_background_process_holding_the_pipes_does_not_hang_the_tool() {
         let root = project("background");
         let started = Instant::now();
-        let out = go("run_command", json!({"command": "sleep 5 & echo started"}), &root);
+        let out = go(
+            "run_command",
+            json!({"command": "sleep 5 & echo started"}),
+            &root,
+        );
         assert!(!out.is_error && out.text.contains("started"));
-        assert!(started.elapsed() < Duration::from_secs(3), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "took {:?}",
+            started.elapsed()
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -832,14 +1116,26 @@ mod tests {
         assert_eq!(diff_preview("a\nb\nc\n", "a\nX\nc\n"), "-b\n+X\n");
         assert_eq!(diff_preview("", "new\n"), "+new\n");
         assert_eq!(diff_preview("a\n", "a\n"), " (no change)\n");
-        assert_eq!(diff_preview("a\na\n", "a\na\na\n"), "+a\n", "repeated lines don't overlap");
+        assert_eq!(
+            diff_preview("a\na\n", "a\na\na\n"),
+            "+a\n",
+            "repeated lines don't overlap"
+        );
         let root = project("preview");
         fs::write(root.join("f.txt"), "one\ntwo\n").unwrap();
         let input = json!({"path": "f.txt", "old_string": "two", "new_string": "2"});
-        let Gate::Ask(preview) = gate(&ALL, "edit_file", &input, &root, &no_allowed()) else { panic!() };
+        let Gate::Ask(preview) = gate(&ALL, "edit_file", &input, &root, &no_allowed()) else {
+            panic!()
+        };
         assert_eq!(preview, "Change f.txt\n-two\n+2\n");
         let missing = json!({"path": "f.txt", "old_string": "zzz", "new_string": "2"});
-        assert!(matches!(gate(&ALL, "edit_file", &missing, &root, &no_allowed()), Gate::Deny(_)), "a doomed edit needs no approval");
+        assert!(
+            matches!(
+                gate(&ALL, "edit_file", &missing, &root, &no_allowed()),
+                Gate::Deny(_)
+            ),
+            "a doomed edit needs no approval"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

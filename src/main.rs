@@ -57,7 +57,12 @@ fn main() -> ExitCode {
     }));
 
     let result = ratatui::run(|terminal| {
-        execute!(stdout(), EnableMouseCapture, EnableBracketedPaste, Print(USER_VAR_SET))?;
+        execute!(
+            stdout(),
+            EnableMouseCapture,
+            EnableBracketedPaste,
+            Print(USER_VAR_SET)
+        )?;
         let result = run(terminal, root);
         release_terminal()?;
         result
@@ -72,7 +77,12 @@ fn main() -> ExitCode {
 }
 
 fn release_terminal() -> io::Result<()> {
-    execute!(stdout(), DisableBracketedPaste, DisableMouseCapture, Print(USER_VAR_CLEAR))
+    execute!(
+        stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        Print(USER_VAR_CLEAR)
+    )
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, root: PathBuf) -> io::Result<()> {

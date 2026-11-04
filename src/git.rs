@@ -53,7 +53,13 @@ pub fn snapshot(root: &Path, known: &[(PathBuf, Option<String>)]) -> Option<Snap
     let top = text_line(output(git(root).args(["rev-parse", "--show-toplevel"]))?)?;
     let top = Path::new(&top).canonicalize().ok()?;
     let head = output(git(root).args(["rev-parse", "--verify", "-q", "HEAD"])).and_then(text_line);
-    let status = output(git(root).args(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"]))?;
+    let status = output(git(root).args([
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=all",
+    ]))?;
     let changes = parse_status(&status, &top);
     let mut bases = Vec::new();
     if let Some(head) = &head {
@@ -63,12 +69,17 @@ pub fn snapshot(root: &Path, known: &[(PathBuf, Option<String>)]) -> Option<Snap
             {
                 // cat-file, because it never runs a repository's text conversion filters.
                 let spec = format!("HEAD:./{}", relative.display());
-                let text = output(git(root).args(["cat-file", "blob", &spec])).and_then(|bytes| String::from_utf8(bytes).ok());
+                let text = output(git(root).args(["cat-file", "blob", &spec]))
+                    .and_then(|bytes| String::from_utf8(bytes).ok());
                 bases.push((path.clone(), text));
             }
         }
     }
-    Some(Snapshot { head, changes, bases })
+    Some(Snapshot {
+        head,
+        changes,
+        bases,
+    })
 }
 
 fn parse_status(output: &[u8], top: &Path) -> HashMap<PathBuf, Change> {
@@ -82,7 +93,11 @@ fn parse_status(output: &[u8], top: &Path) -> HashMap<PathBuf, Change> {
         if matches!(index_state, b'R' | b'C') {
             fields.next(); // The original path follows a rename or copy.
         }
-        let change = if matches!(index_state, b'?' | b'A') { Change::Added } else { Change::Modified };
+        let change = if matches!(index_state, b'?' | b'A') {
+            Change::Added
+        } else {
+            Change::Modified
+        };
         changes.insert(top.join(OsStr::from_bytes(&field[3..])), change);
     }
     changes
@@ -102,12 +117,21 @@ pub enum Mark {
 pub fn line_marks(old: &[String], new: &[String]) -> Vec<Mark> {
     let mut marks = vec![Mark::None; new.len()];
     let start = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    let tail = old[start..].iter().rev().zip(new[start..].iter().rev()).take_while(|(a, b)| a == b).count();
+    let tail = old[start..]
+        .iter()
+        .rev()
+        .zip(new[start..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
     let a = &old[start..old.len() - tail];
     let b = &new[start..new.len() - tail];
     for (a_from, a_count, b_from, b_count) in hunks(a, b) {
         for offset in 0..b_count {
-            marks[start + b_from + offset] = if offset < a_count { Mark::Changed } else { Mark::Added };
+            marks[start + b_from + offset] = if offset < a_count {
+                Mark::Changed
+            } else {
+                Mark::Added
+            };
         }
         if b_count == 0 && a_count > 0 && a_from <= a.len() && !new.is_empty() {
             let line = (start + b_from).min(new.len() - 1);
@@ -184,8 +208,16 @@ mod tests {
         assert_eq!(marks("a\nb\nc", "a\nX\nc"), [None, Changed, None]);
         assert_eq!(marks("a\nc", "a\nb\nc"), [None, Added, None]);
         assert_eq!(marks("a\nb\nc", "a\nc"), [None, Deleted]);
-        assert_eq!(marks("a\nb", "a"), [Deleted], "deleting the end marks the last line");
-        assert_eq!(marks("a\nb\nc", "a\nX\nY\nc"), [None, Changed, Added, None], "a longer replacement");
+        assert_eq!(
+            marks("a\nb", "a"),
+            [Deleted],
+            "deleting the end marks the last line"
+        );
+        assert_eq!(
+            marks("a\nb\nc", "a\nX\nY\nc"),
+            [None, Changed, Added, None],
+            "a longer replacement"
+        );
         assert_eq!(marks("", "a"), [Changed]);
     }
 
@@ -194,7 +226,10 @@ mod tests {
         use Mark::{Added, Changed, None};
         let old = "1\n2\n3\n4\n5\n6";
         let new = "1\nX\n3\n4\nnew\n5\n6";
-        assert_eq!(marks(old, new), [None, Changed, None, None, Added, None, None]);
+        assert_eq!(
+            marks(old, new),
+            [None, Changed, None, None, Added, None, None]
+        );
     }
 
     #[test]
@@ -244,17 +279,26 @@ mod tests {
         fs::remove_file(dir.join("gone.txt")).unwrap();
         run(&dir, &["mv", "sub/old name.txt", "sub/renamed.txt"]);
 
-        let known = [(dir.join("tracked.txt"), None), (dir.join("new file.txt"), None)];
+        let known = [
+            (dir.join("tracked.txt"), None),
+            (dir.join("new file.txt"), None),
+        ];
         let snapshot = snapshot(&dir, &known).unwrap();
         let changes = &snapshot.changes;
         assert_eq!(changes[&dir.join("tracked.txt")], Change::Modified);
         assert_eq!(changes[&dir.join("new file.txt")], Change::Added);
         assert_eq!(changes[&dir.join("gone.txt")], Change::Modified);
         assert_eq!(changes[&dir.join("sub/renamed.txt")], Change::Modified);
-        assert!(!changes.contains_key(&dir.join("sub/old name.txt")), "the old name of a rename isn't an entry");
+        assert!(
+            !changes.contains_key(&dir.join("sub/old name.txt")),
+            "the old name of a rename isn't an entry"
+        );
         assert!(!changes.contains_key(&dir.join("clean.txt")));
         assert!(snapshot.head.is_some());
-        assert_eq!(snapshot.bases[0], (dir.join("tracked.txt"), Some("one\n".to_owned())));
+        assert_eq!(
+            snapshot.bases[0],
+            (dir.join("tracked.txt"), Some("one\n".to_owned()))
+        );
         assert_eq!(snapshot.bases[1], (dir.join("new file.txt"), None));
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -266,7 +310,12 @@ mod tests {
         run(&dir, &["add", "."]);
         run(&dir, &["commit", "-qm", "first"]);
         let first = snapshot(&dir, &[]).unwrap().head;
-        assert!(snapshot(&dir, &[(dir.join("a.txt"), first.clone())]).unwrap().bases.is_empty());
+        assert!(
+            snapshot(&dir, &[(dir.join("a.txt"), first.clone())])
+                .unwrap()
+                .bases
+                .is_empty()
+        );
 
         fs::write(dir.join("a.txt"), "two\n").unwrap();
         run(&dir, &["commit", "-qam", "second"]);
@@ -317,18 +366,31 @@ mod tests {
         let dir = repo("fsmonitor");
         let marker = dir.join("ran");
         let script = dir.join("evil.sh");
-        fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(dir.join("a.txt"), "one\n").unwrap();
         run(&dir, &["add", "a.txt"]);
         run(&dir, &["commit", "-qm", "first"]);
-        run(&dir, &["config", "core.fsmonitor", script.to_str().unwrap()]);
+        run(
+            &dir,
+            &["config", "core.fsmonitor", script.to_str().unwrap()],
+        );
         fs::write(dir.join(".gitattributes"), "*.txt diff=evil\n").unwrap();
-        run(&dir, &["config", "diff.evil.textconv", script.to_str().unwrap()]);
+        run(
+            &dir,
+            &["config", "diff.evil.textconv", script.to_str().unwrap()],
+        );
 
         let result = snapshot(&dir, &[(dir.join("a.txt"), None)]).unwrap();
         assert_eq!(result.bases[0].1.as_deref(), Some("one\n"));
-        assert!(!marker.exists(), "a program named in the repository's config ran");
+        assert!(
+            !marker.exists(),
+            "a program named in the repository's config ran"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

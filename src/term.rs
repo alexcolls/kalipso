@@ -13,7 +13,8 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 
 use crate::app::{Event, TabHits, tab_line};
 
-pub const HINTS: &str = "Alt+T new  Alt+W close  Alt+PgUp/PgDn tabs  Alt+S scroll mode  wheel scrolls  drag copies";
+pub const HINTS: &str =
+    "Alt+T new  Alt+W close  Alt+PgUp/PgDn tabs  Alt+S scroll mode  wheel scrolls  drag copies";
 pub const SCROLL_HINTS: &str = "SCROLL MODE  ↑↓ PgUp/PgDn Home/End move  Esc leaves";
 
 const SCROLLBACK: usize = 10_000;
@@ -33,12 +34,20 @@ impl vt100::Callbacks for Hooks {
         self.title = Some(text.chars().filter(|c| !c.is_control()).take(24).collect());
     }
 
-    fn unhandled_csi(&mut self, screen: &mut vt100::Screen, i1: Option<u8>, _: Option<u8>, params: &[&[u16]], c: char) {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        _: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
         let first = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
         match (i1, c, first) {
             (None, 'n', 6) => {
                 let (row, col) = screen.cursor_position();
-                self.reply.extend(format!("\x1b[{};{}R", row + 1, col + 1).bytes());
+                self.reply
+                    .extend(format!("\x1b[{};{}R", row + 1, col + 1).bytes());
             }
             (None, 'n', 5) => self.reply.extend(b"\x1b[0n"),
             (None, 'c', 0) => self.reply.extend(b"\x1b[?62;22c"),
@@ -79,7 +88,12 @@ impl Term {
     fn resize(&mut self, rows: u16, cols: u16) {
         if self.size != (rows, cols) {
             self.size = (rows, cols);
-            let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+            let size = PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
             let _ = self.master.resize(size);
             self.parser.screen_mut().set_size(rows, cols);
         }
@@ -95,17 +109,30 @@ impl Term {
 
     fn scroll(&mut self, delta: isize) {
         let current = self.parser.screen().scrollback() as isize;
-        self.parser.screen_mut().set_scrollback((current + delta).max(0) as usize);
+        self.parser
+            .screen_mut()
+            .set_scrollback((current + delta).max(0) as usize);
     }
 }
 
-fn spawn(id: u64, number: u64, root: &PathBuf, size: (u16, u16), tx: SyncSender<Event>) -> Result<Term, String> {
+fn spawn(
+    id: u64,
+    number: u64,
+    root: &PathBuf,
+    size: (u16, u16),
+    tx: SyncSender<Event>,
+) -> Result<Term, String> {
     fn text(err: impl std::fmt::Display) -> String {
         err.to_string()
     }
     let (rows, cols) = size;
     let pair = native_pty_system()
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(text)?;
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
     let mut command = CommandBuilder::new(shell);
@@ -124,7 +151,11 @@ fn spawn(id: u64, number: u64, root: &PathBuf, size: (u16, u16), tx: SyncSender<
     let (input, queued) = mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
         while let Ok(bytes) = queued.recv() {
-            if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
+            if writer
+                .write_all(&bytes)
+                .and_then(|()| writer.flush())
+                .is_err()
+            {
                 break;
             }
         }
@@ -186,7 +217,13 @@ impl Terminals {
     }
 
     pub fn new_tab(&mut self) -> Result<(), String> {
-        let term = spawn(self.next_id, self.next_number, &self.root, self.last_size, self.tx.clone())?;
+        let term = spawn(
+            self.next_id,
+            self.next_number,
+            &self.root,
+            self.last_size,
+            self.tx.clone(),
+        )?;
         self.next_id += 1;
         self.next_number += 1;
         self.tabs.push(term);
@@ -226,7 +263,9 @@ impl Terminals {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
-        let Some(term) = self.tabs.get_mut(self.active) else { return };
+        let Some(term) = self.tabs.get_mut(self.active) else {
+            return;
+        };
         if self.scroll_mode {
             let page = term.size.0 as isize;
             match key.code {
@@ -256,7 +295,9 @@ impl Terminals {
     }
 
     pub fn paste(&mut self, text: &str) {
-        let Some(term) = self.tabs.get_mut(self.active) else { return };
+        let Some(term) = self.tabs.get_mut(self.active) else {
+            return;
+        };
         // Removes control characters, so pasted text can't end the bracket early and run commands.
         let clean: String = text
             .replace("\r\n", "\r")
@@ -281,7 +322,9 @@ impl Terminals {
             self.scroll_mode = false;
             return;
         }
-        let Some(term) = self.tabs.get_mut(self.active) else { return };
+        let Some(term) = self.tabs.get_mut(self.active) else {
+            return;
+        };
         let up = match mouse.kind {
             MouseEventKind::ScrollUp => true,
             MouseEventKind::ScrollDown => false,
@@ -290,7 +333,10 @@ impl Terminals {
         if term.parser.screen().alternate_screen() {
             // Full-screen programs like less have no scrollback, so the wheel moves them instead.
             let code = if up { KeyCode::Up } else { KeyCode::Down };
-            let arrow = key_to_bytes(KeyEvent::new(code, KeyModifiers::NONE), term.parser.screen().application_cursor());
+            let arrow = key_to_bytes(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                term.parser.screen().application_cursor(),
+            );
             term.send(arrow.repeat(3));
         } else {
             term.scroll(if up { 3 } else { -3 });
@@ -298,7 +344,11 @@ impl Terminals {
     }
 
     pub fn hints(&self) -> &'static str {
-        if self.scroll_mode { SCROLL_HINTS } else { HINTS }
+        if self.scroll_mode {
+            SCROLL_HINTS
+        } else {
+            HINTS
+        }
     }
 
     /// Returns an error to show if the first shell could not start.
@@ -306,15 +356,23 @@ impl Terminals {
         if area.height < 2 || area.width == 0 {
             return None;
         }
-        let body = Rect { y: area.y + 1, height: area.height - 1, ..area };
+        let body = Rect {
+            y: area.y + 1,
+            height: area.height - 1,
+            ..area
+        };
         self.last_size = (body.height, body.width);
         let mut error = None;
         if !self.started {
             self.started = true;
-            error = self.new_tab().err().map(|err| format!("Can't start a shell: {err}"));
+            error = self
+                .new_tab()
+                .err()
+                .map(|err| format!("Can't start a shell: {err}"));
         }
         if self.tabs.is_empty() {
-            let hint = Paragraph::new("No terminal open. Press Alt+T for a new one.").style(Style::new().fg(Color::DarkGray));
+            let hint = Paragraph::new("No terminal open. Press Alt+T for a new one.")
+                .style(Style::new().fg(Color::DarkGray));
             frame.render_widget(hint, area);
             return error;
         }
@@ -332,7 +390,10 @@ impl Terminals {
         frame.render_widget(PseudoTerminal::new(screen).cursor(hidden), body);
         if focused && !screen.hide_cursor() && screen.scrollback() == 0 && !self.scroll_mode {
             let (row, col) = screen.cursor_position();
-            frame.set_cursor_position((body.x + col.min(body.width - 1), body.y + row.min(body.height - 1)));
+            frame.set_cursor_position((
+                body.x + col.min(body.width - 1),
+                body.y + row.min(body.height - 1),
+            ));
         }
         error
     }
@@ -446,7 +507,10 @@ mod tests {
         assert_eq!(key(KeyCode::F(1), NONE), b"\x1bOP");
         assert_eq!(key(KeyCode::F(5), NONE), b"\x1b[15~");
         assert_eq!(key(KeyCode::F(12), NONE), b"\x1b[24~");
-        assert_eq!(key_to_bytes(KeyEvent::new(KeyCode::Up, NONE), true), b"\x1bOA");
+        assert_eq!(
+            key_to_bytes(KeyEvent::new(KeyCode::Up, NONE), true),
+            b"\x1bOA"
+        );
     }
 
     fn parser() -> vt100::Parser<Hooks> {
@@ -481,7 +545,11 @@ mod tests {
                 Ok(Event::PtyExit { id }) => terms.on_exit(id),
                 _ => {}
             }
-            if terms.tabs.first().is_some_and(|t| t.parser.screen().contents().contains(wanted)) {
+            if terms
+                .tabs
+                .first()
+                .is_some_and(|t| t.parser.screen().contents().contains(wanted))
+            {
                 return true;
             }
         }
@@ -503,11 +571,17 @@ mod tests {
         let mut terms = Terminals::new(std::env::temp_dir(), tx);
         terms.new_tab().unwrap();
         type_line(&mut terms, "echo $((40+2))");
-        assert!(wait_for(&mut terms, &rx, "42"), "command output should reach the screen");
+        assert!(
+            wait_for(&mut terms, &rx, "42"),
+            "command output should reach the screen"
+        );
 
         terms.tabs[0].resize(10, 40);
         type_line(&mut terms, "stty size");
-        assert!(wait_for(&mut terms, &rx, "10 40"), "the shell should see the new size");
+        assert!(
+            wait_for(&mut terms, &rx, "10 40"),
+            "the shell should see the new size"
+        );
 
         type_line(&mut terms, "exit");
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -533,7 +607,18 @@ mod tests {
 
     fn fake_term(input: Sender<Vec<u8>>) -> Term {
         let pair = native_pty_system().openpty(PtySize::default()).unwrap();
-        let child = pair.slave.spawn_command(CommandBuilder::new("/bin/true")).unwrap();
-        Term { id: 1, number: 1, parser: vt100::Parser::new_with_callbacks(24, 80, 100, Hooks::default()), input, master: pair.master, child, size: (24, 80) }
+        let child = pair
+            .slave
+            .spawn_command(CommandBuilder::new("/bin/true"))
+            .unwrap();
+        Term {
+            id: 1,
+            number: 1,
+            parser: vt100::Parser::new_with_callbacks(24, 80, 100, Hooks::default()),
+            input,
+            master: pair.master,
+            child,
+            size: (24, 80),
+        }
     }
 }

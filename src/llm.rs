@@ -16,7 +16,12 @@ pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
 const ANTHROPIC_VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 /// Models that accept the server-side `fallbacks` parameter.
-const FALLBACK_MODELS: [&str; 4] = ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"];
+const FALLBACK_MODELS: [&str; 4] = [
+    "claude-fable-5-1",
+    "claude-opus-5-5",
+    "claude-opus-5",
+    "claude-sonnet-5-5",
+];
 const MAX_TOKENS: u64 = 64000;
 const MAX_RETRIES: u32 = 2;
 /// Applies to each read, so long streams are fine as long as data keeps arriving.
@@ -38,7 +43,12 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub const ALL: [Provider; 4] = [Provider::Claude, Provider::OpenAi, Provider::Grok, Provider::OpenRouter];
+    pub const ALL: [Provider; 4] = [
+        Provider::Claude,
+        Provider::OpenAi,
+        Provider::Grok,
+        Provider::OpenRouter,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -77,7 +87,9 @@ impl Provider {
     }
 
     pub fn api_key(self) -> Option<String> {
-        std::env::var(self.key_env()).ok().filter(|key| !key.is_empty())
+        std::env::var(self.key_env())
+            .ok()
+            .filter(|key| !key.is_empty())
     }
 
     /// The API root. `<PROVIDER>_BASE_URL` overrides it, for proxies and gateways.
@@ -88,7 +100,10 @@ impl Provider {
             Provider::Grok => ("XAI_BASE_URL", "https://api.x.ai/v1"),
             Provider::OpenRouter => ("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         };
-        std::env::var(var).ok().filter(|url| !url.is_empty()).unwrap_or_else(|| default.to_owned())
+        std::env::var(var)
+            .ok()
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| default.to_owned())
     }
 }
 
@@ -181,7 +196,11 @@ pub fn tool_results(wire: Wire, results: &[(String, ToolOutput)]) -> Vec<Value> 
 
 /// These formats have no error flag for tool results, so errors are marked in the text.
 fn marked(output: &ToolOutput) -> String {
-    if output.is_error { format!("ERROR: {}", output.text) } else { output.text.clone() }
+    if output.is_error {
+        format!("ERROR: {}", output.text)
+    } else {
+        output.text.clone()
+    }
 }
 
 fn function_tools(defs: &[ToolDef], nested: bool) -> Vec<Value> {
@@ -278,7 +297,9 @@ fn agent() -> Agent {
 /// Pulls the human-readable message out of an API error body. All three formats use error.message.
 fn error_text(status: u16, body: &str) -> String {
     let parsed: Option<Value> = serde_json::from_str(body).ok();
-    let message = parsed.as_ref().and_then(|v| v["error"]["message"].as_str().or(v["message"].as_str()));
+    let message = parsed
+        .as_ref()
+        .and_then(|v| v["error"]["message"].as_str().or(v["message"].as_str()));
     match message {
         Some(message) => format!("HTTP {status}: {message}"),
         None => {
@@ -307,7 +328,11 @@ fn wait(duration: Duration, cancel: &AtomicBool) -> bool {
 }
 
 /// Runs one model turn, calling `emit` as text arrives. `Ok(None)` means it was cancelled.
-pub fn stream(request: &Request, cancel: &AtomicBool, mut emit: impl FnMut(Delta)) -> Result<Option<Turn>, String> {
+pub fn stream(
+    request: &Request,
+    cancel: &AtomicBool,
+    mut emit: impl FnMut(Delta),
+) -> Result<Option<Turn>, String> {
     let agent = agent();
     let mut attempt = 0;
     let response = loop {
@@ -316,8 +341,14 @@ pub fn stream(request: &Request, cancel: &AtomicBool, mut emit: impl FnMut(Delta
         let mut call = agent.post(&url).header("content-type", "application/json");
         call = match request.wire {
             Wire::Messages => {
-                let call = call.header("x-api-key", &request.api_key).header("anthropic-version", ANTHROPIC_VERSION);
-                if uses_fallbacks(request) { call.header("anthropic-beta", FALLBACK_BETA) } else { call }
+                let call = call
+                    .header("x-api-key", &request.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION);
+                if uses_fallbacks(request) {
+                    call.header("anthropic-beta", FALLBACK_BETA)
+                } else {
+                    call
+                }
             }
             _ => call.header("authorization", &format!("Bearer {}", request.api_key)),
         };
@@ -338,7 +369,9 @@ pub fn stream(request: &Request, cancel: &AtomicBool, mut emit: impl FnMut(Delta
                 if status == 400
                     && request.wire == Wire::Responses
                     && !request.responses_stored.load(Ordering::Relaxed)
-                    && ["store", "include", "encrypted"].iter().any(|word| lowered.contains(word))
+                    && ["store", "include", "encrypted"]
+                        .iter()
+                        .any(|word| lowered.contains(word))
                 {
                     request.responses_stored.store(true, Ordering::Relaxed);
                     continue;
@@ -368,7 +401,8 @@ pub fn stream(request: &Request, cancel: &AtomicBool, mut emit: impl FnMut(Delta
         Wire::ChatCompletions => Box::<ChatParser>::default(),
     };
     let finished = read_sse(reader, cancel, |data| {
-        let value: Value = serde_json::from_str(data).map_err(|err| format!("Bad data from the provider: {err}"))?;
+        let value: Value = serde_json::from_str(data)
+            .map_err(|err| format!("Bad data from the provider: {err}"))?;
         parser.event(&value, &mut emit)
     })?;
     if !finished {
@@ -378,7 +412,11 @@ pub fn stream(request: &Request, cancel: &AtomicBool, mut emit: impl FnMut(Delta
 }
 
 /// Feeds each server-sent event's data to `on_data`. Returns false if cancelled.
-fn read_sse(reader: impl BufRead, cancel: &AtomicBool, mut on_data: impl FnMut(&str) -> Result<(), String>) -> Result<bool, String> {
+fn read_sse(
+    reader: impl BufRead,
+    cancel: &AtomicBool,
+    mut on_data: impl FnMut(&str) -> Result<(), String>,
+) -> Result<bool, String> {
     let mut data = String::new();
     for line in reader.lines() {
         if cancel.load(Ordering::Relaxed) {
@@ -441,10 +479,14 @@ impl Parser for MessagesParser {
         match data["type"].as_str().unwrap_or("") {
             "message_start" => {
                 let usage = &data["message"]["usage"];
-                self.input_tokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
-                    .iter()
-                    .filter_map(|field| usage[field].as_u64())
-                    .sum();
+                self.input_tokens = [
+                    "input_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ]
+                .iter()
+                .filter_map(|field| usage[field].as_u64())
+                .sum();
                 self.output_tokens = usage["output_tokens"].as_u64().unwrap_or(0);
             }
             "content_block_start" => {
@@ -459,7 +501,9 @@ impl Parser for MessagesParser {
             }
             "content_block_delta" => {
                 let delta = &data["delta"];
-                let Some(block) = self.blocks.get_mut(index) else { return Ok(()) };
+                let Some(block) = self.blocks.get_mut(index) else {
+                    return Ok(());
+                };
                 let mut append = |field: &str, text: &str| {
                     let joined = format!("{}{text}", block[field].as_str().unwrap_or(""));
                     block[field] = json!(joined);
@@ -475,9 +519,14 @@ impl Parser for MessagesParser {
                         append("thinking", text);
                         emit(Delta::Thinking(text.to_owned()));
                     }
-                    "signature_delta" => append("signature", delta["signature"].as_str().unwrap_or("")),
+                    "signature_delta" => {
+                        append("signature", delta["signature"].as_str().unwrap_or(""))
+                    }
                     "input_json_delta" => {
-                        self.partial_input.entry(index).or_default().push_str(delta["partial_json"].as_str().unwrap_or(""));
+                        self.partial_input
+                            .entry(index)
+                            .or_default()
+                            .push_str(delta["partial_json"].as_str().unwrap_or(""));
                     }
                     _ => {}
                 }
@@ -486,7 +535,9 @@ impl Parser for MessagesParser {
                 if let Some(stop) = data["delta"]["stop_reason"].as_str() {
                     self.stop = Some(stop.to_owned());
                 }
-                self.refusal_category = data["delta"]["stop_details"]["category"].as_str().map(str::to_owned);
+                self.refusal_category = data["delta"]["stop_details"]["category"]
+                    .as_str()
+                    .map(str::to_owned);
                 if let Some(tokens) = data["usage"]["output_tokens"].as_u64() {
                     self.output_tokens = tokens;
                 }
@@ -522,8 +573,14 @@ impl Parser for MessagesParser {
             .filter(|block| block["type"] == "tool_use")
             .map(|block| {
                 let id = text_of(&block["id"]);
-                let input = raw.remove(&id).map_or_else(|| Ok(block["input"].clone()), Err);
-                ToolCall { name: text_of(&block["name"]), id, input }
+                let input = raw
+                    .remove(&id)
+                    .map_or_else(|| Ok(block["input"].clone()), Err);
+                ToolCall {
+                    name: text_of(&block["name"]),
+                    id,
+                    input,
+                }
             })
             .collect();
         let stop = match self.stop.as_deref() {
@@ -533,8 +590,18 @@ impl Parser for MessagesParser {
             Some("refusal") => Stop::Refusal(self.refusal_category.take()),
             other => Stop::Other(other.unwrap_or("unknown").to_owned()),
         };
-        let items = if blocks.is_empty() { Vec::new() } else { vec![json!({"role": "assistant", "content": blocks})] };
-        Ok(Turn { items, calls, stop, input_tokens: self.input_tokens, output_tokens: self.output_tokens })
+        let items = if blocks.is_empty() {
+            Vec::new()
+        } else {
+            vec![json!({"role": "assistant", "content": blocks})]
+        };
+        Ok(Turn {
+            items,
+            calls,
+            stop,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+        })
     }
 }
 
@@ -547,7 +614,9 @@ pub fn replayable_blocks(blocks: Vec<Value>) -> Vec<Value> {
         .into_iter()
         .enumerate()
         .filter(|(index, block)| {
-            if block.is_null() || (block["type"] == "text" && block["text"].as_str().unwrap_or("").is_empty()) {
+            if block.is_null()
+                || (block["type"] == "text" && block["text"].as_str().unwrap_or("").is_empty())
+            {
                 return false;
             }
             match last_fallback {
@@ -572,23 +641,38 @@ struct ResponsesParser {
 impl Parser for ResponsesParser {
     fn event(&mut self, data: &Value, emit: &mut dyn FnMut(Delta)) -> Result<(), String> {
         match data["type"].as_str().unwrap_or("") {
-            "response.output_text.delta" | "response.refusal.delta" => emit(Delta::Text(text_of(&data["delta"]))),
-            "response.reasoning_summary_text.delta" => emit(Delta::Thinking(text_of(&data["delta"]))),
+            "response.output_text.delta" | "response.refusal.delta" => {
+                emit(Delta::Text(text_of(&data["delta"])))
+            }
+            "response.reasoning_summary_text.delta" => {
+                emit(Delta::Thinking(text_of(&data["delta"])))
+            }
             "response.output_item.added" if data["item"]["type"] == "function_call" => {
                 emit(Delta::ToolStart(text_of(&data["item"]["name"])));
             }
             "response.output_item.done" => self.output.push(data["item"].clone()),
             "response.completed" | "response.incomplete" => {
                 let response = &data["response"];
-                self.status = response["status"].as_str().map(str::to_owned).or(Some("completed".to_owned()));
-                self.incomplete_reason = response["incomplete_details"]["reason"].as_str().map(str::to_owned);
+                self.status = response["status"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or(Some("completed".to_owned()));
+                self.incomplete_reason = response["incomplete_details"]["reason"]
+                    .as_str()
+                    .map(str::to_owned);
                 self.input_tokens = response["usage"]["input_tokens"].as_u64().unwrap_or(0);
                 self.output_tokens = response["usage"]["output_tokens"].as_u64().unwrap_or(0);
-                self.final_output = response["output"].as_array().filter(|items| !items.is_empty()).cloned();
+                self.final_output = response["output"]
+                    .as_array()
+                    .filter(|items| !items.is_empty())
+                    .cloned();
             }
             "response.failed" => return Err(text_of(&data["response"]["error"]["message"])),
             "error" => {
-                let message = data["message"].as_str().or(data["error"]["message"].as_str()).unwrap_or("Unknown error");
+                let message = data["message"]
+                    .as_str()
+                    .or(data["error"]["message"].as_str())
+                    .unwrap_or("Unknown error");
                 return Err(message.to_owned());
             }
             _ => {}
@@ -597,7 +681,9 @@ impl Parser for ResponsesParser {
     }
 
     fn finish(self: Box<Self>) -> Result<Turn, String> {
-        let Some(status) = self.status else { return Err(CUT_OFF.to_owned()) };
+        let Some(status) = self.status else {
+            return Err(CUT_OFF.to_owned());
+        };
         let items = self.final_output.unwrap_or(self.output);
         let calls: Vec<ToolCall> = items
             .iter()
@@ -610,12 +696,20 @@ impl Parser for ResponsesParser {
             .collect();
         let stop = match (status.as_str(), self.incomplete_reason.as_deref()) {
             ("incomplete", Some("max_output_tokens")) => Stop::MaxTokens,
-            ("incomplete", Some("content_filter")) => Stop::Refusal(Some("content_filter".to_owned())),
+            ("incomplete", Some("content_filter")) => {
+                Stop::Refusal(Some("content_filter".to_owned()))
+            }
             ("incomplete", reason) => Stop::Other(reason.unwrap_or("incomplete").to_owned()),
             _ if !calls.is_empty() => Stop::ToolUse,
             _ => Stop::EndTurn,
         };
-        Ok(Turn { items, calls, stop, input_tokens: self.input_tokens, output_tokens: self.output_tokens })
+        Ok(Turn {
+            items,
+            calls,
+            stop,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+        })
     }
 }
 
@@ -631,7 +725,9 @@ struct ChatParser {
 impl Parser for ChatParser {
     fn event(&mut self, data: &Value, emit: &mut dyn FnMut(Delta)) -> Result<(), String> {
         let choice = &data["choices"][0];
-        let error = data["error"]["message"].as_str().or(choice["error"]["message"].as_str());
+        let error = data["error"]["message"]
+            .as_str()
+            .or(choice["error"]["message"].as_str());
         if let Some(message) = error {
             return Err(message.to_owned());
         }
@@ -650,15 +746,23 @@ impl Parser for ChatParser {
             emit(Delta::Thinking(text.to_owned()));
         }
         for call in delta["tool_calls"].as_array().into_iter().flatten() {
-            let entry = self.calls.entry(call["index"].as_u64().unwrap_or(0)).or_default();
+            let entry = self
+                .calls
+                .entry(call["index"].as_u64().unwrap_or(0))
+                .or_default();
             if let Some(id) = call["id"].as_str() {
                 entry.0 = id.to_owned();
             }
-            if let Some(name) = call["function"]["name"].as_str().filter(|name| !name.is_empty()) {
+            if let Some(name) = call["function"]["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+            {
                 entry.1 = name.to_owned();
                 emit(Delta::ToolStart(name.to_owned()));
             }
-            entry.2.push_str(call["function"]["arguments"].as_str().unwrap_or(""));
+            entry
+                .2
+                .push_str(call["function"]["arguments"].as_str().unwrap_or(""));
         }
         if let Some(reason) = choice["finish_reason"].as_str() {
             self.finish_reason = Some(reason.to_owned());
@@ -669,11 +773,17 @@ impl Parser for ChatParser {
     // ponytail: reasoning_details aren't replayed. Some OpenRouter models may want them
     // across tool calls; add when one rejects the history or loses context.
     fn finish(self: Box<Self>) -> Result<Turn, String> {
-        let Some(reason) = self.finish_reason else { return Err(CUT_OFF.to_owned()) };
+        let Some(reason) = self.finish_reason else {
+            return Err(CUT_OFF.to_owned());
+        };
         let calls: Vec<ToolCall> = self
             .calls
             .values()
-            .map(|(id, name, args)| ToolCall { id: id.clone(), name: name.clone(), input: parse_arguments(args) })
+            .map(|(id, name, args)| ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                input: parse_arguments(args),
+            })
             .collect();
         let stop = match reason.as_str() {
             "stop" => Stop::EndTurn,
@@ -686,7 +796,13 @@ impl Parser for ChatParser {
         };
         if self.text.is_empty() && self.calls.is_empty() {
             // Some providers reject an assistant message with no content on the next request.
-            return Ok(Turn { items: Vec::new(), calls, stop, input_tokens: self.input_tokens, output_tokens: self.output_tokens });
+            return Ok(Turn {
+                items: Vec::new(),
+                calls,
+                stop,
+                input_tokens: self.input_tokens,
+                output_tokens: self.output_tokens,
+            });
         }
         let mut item = json!({"role": "assistant", "content": if self.text.is_empty() { Value::Null } else { json!(self.text) }});
         if !self.calls.is_empty() {
@@ -697,7 +813,13 @@ impl Parser for ChatParser {
                 .collect();
             item["tool_calls"] = json!(tool_calls);
         }
-        Ok(Turn { items: vec![item], calls, stop, input_tokens: self.input_tokens, output_tokens: self.output_tokens })
+        Ok(Turn {
+            items: vec![item],
+            calls,
+            stop,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+        })
     }
 }
 
@@ -714,18 +836,34 @@ pub struct ModelInfo {
 /// Whether an error or stop reason means the conversation no longer fits the model.
 pub fn is_context_overflow(message: &str) -> bool {
     let lower = message.to_lowercase();
-    ["prompt is too long", "context_length_exceeded", "maximum context length", "maximum prompt length", "context window", "context_window"]
-        .iter()
-        .any(|phrase| lower.contains(phrase))
+    [
+        "prompt is too long",
+        "context_length_exceeded",
+        "maximum context length",
+        "maximum prompt length",
+        "context window",
+        "context_window",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
 }
 
 /// Lists the chat models a provider offers, newest first where the API gives dates.
-pub fn list_models(provider: Provider, base_url: &str, api_key: &str) -> Result<Vec<ModelInfo>, String> {
-    let query = if provider == Provider::Claude { "?limit=1000" } else { "" };
+pub fn list_models(
+    provider: Provider,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<ModelInfo>, String> {
+    let query = if provider == Provider::Claude {
+        "?limit=1000"
+    } else {
+        ""
+    };
     let url = format!("{base_url}/models{query}");
     let call = agent().get(&url);
     let call = if provider.wire() == Wire::Messages {
-        call.header("x-api-key", api_key).header("anthropic-version", ANTHROPIC_VERSION)
+        call.header("x-api-key", api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
     } else {
         call.header("authorization", &format!("Bearer {api_key}"))
     };
@@ -740,13 +878,25 @@ pub fn list_models(provider: Provider, base_url: &str, api_key: &str) -> Result<
     if !(200..300).contains(&status) {
         return Err(error_text(status, &body));
     }
-    let parsed: Value = serde_json::from_str(&body).map_err(|err| format!("Bad data from the provider: {err}"))?;
+    let parsed: Value =
+        serde_json::from_str(&body).map_err(|err| format!("Bad data from the provider: {err}"))?;
     Ok(models_from(provider, &parsed))
 }
 
 fn models_from(provider: Provider, parsed: &Value) -> Vec<ModelInfo> {
-    const NOT_CHAT: [&str; 11] =
-        ["embedding", "whisper", "tts", "dall-e", "moderation", "image", "audio", "realtime", "transcribe", "sora", "imagine"];
+    const NOT_CHAT: [&str; 11] = [
+        "embedding",
+        "whisper",
+        "tts",
+        "dall-e",
+        "moderation",
+        "image",
+        "audio",
+        "realtime",
+        "transcribe",
+        "sora",
+        "imagine",
+    ];
     let mut entries: Vec<&Value> = parsed["data"].as_array().into_iter().flatten().collect();
     match provider {
         Provider::Claude => {}
@@ -772,11 +922,14 @@ fn models_from(provider: Provider, parsed: &Value) -> Vec<ModelInfo> {
             Some(ModelInfo {
                 id: model["id"].as_str()?.to_owned(),
                 features: ClaudeFeatures {
-                    adaptive_thinking: capabilities["thinking"]["types"]["adaptive"]["supported"] == true,
+                    adaptive_thinking: capabilities["thinking"]["types"]["adaptive"]["supported"]
+                        == true,
                     effort: capabilities["effort"]["supported"] == true,
                 },
                 // Claude says max_input_tokens, OpenRouter says context_length.
-                context: model["max_input_tokens"].as_u64().or(model["context_length"].as_u64()),
+                context: model["max_input_tokens"]
+                    .as_u64()
+                    .or(model["context_length"].as_u64()),
                 max_output: model["max_tokens"].as_u64(),
             })
         })
@@ -807,7 +960,9 @@ pub mod testing {
         let seen = requests.clone();
         thread::spawn(move || {
             for (status, content) in responses {
-                let Ok((mut socket, _)) = listener.accept() else { return };
+                let Ok((mut socket, _)) = listener.accept() else {
+                    return;
+                };
                 let mut reader = BufReader::new(socket.try_clone().unwrap());
                 let mut first = String::new();
                 reader.read_line(&mut first).unwrap();
@@ -828,8 +983,13 @@ pub mod testing {
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
-                seen.lock().unwrap().push((path, headers, String::from_utf8(body).unwrap()));
-                let head = format!("HTTP/1.1 {status} X\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", content.len());
+                seen.lock()
+                    .unwrap()
+                    .push((path, headers, String::from_utf8(body).unwrap()));
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    content.len()
+                );
                 socket.write_all(head.as_bytes()).unwrap();
                 socket.write_all(content.as_bytes()).unwrap();
             }
@@ -839,7 +999,10 @@ pub mod testing {
 
     /// A body of server-sent events, one per JSON line.
     pub fn sse(events: &[serde_json::Value]) -> String {
-        events.iter().map(|event| format!("data: {event}\n\n")).collect()
+        events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect()
     }
 }
 
@@ -857,7 +1020,10 @@ mod tests {
             system: "be brief".to_owned(),
             tool_names: vec!["read_file", "write_file"],
             history: vec![user_message("hi")],
-            claude: ClaudeFeatures { adaptive_thinking: true, effort: true },
+            claude: ClaudeFeatures {
+                adaptive_thinking: true,
+                effort: true,
+            },
             max_output: None,
             responses_stored: Arc::new(AtomicBool::new(false)),
         }
@@ -870,7 +1036,9 @@ mod tests {
     }
 
     fn claude_events(blocks: Vec<Value>, stop: &str) -> Vec<Value> {
-        let mut events = vec![json!({"type": "message_start", "message": {"usage": {"input_tokens": 10, "cache_read_input_tokens": 5, "output_tokens": 1}}})];
+        let mut events = vec![
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 10, "cache_read_input_tokens": 5, "output_tokens": 1}}}),
+        ];
         events.extend(blocks);
         events.push(json!({"type": "message_delta", "delta": {"stop_reason": stop}, "usage": {"output_tokens": 7}}));
         events.push(json!({"type": "message_stop"}));
@@ -884,7 +1052,10 @@ mod tests {
         assert_eq!(path, "/messages");
         assert_eq!(body["max_tokens"], 64000);
         assert_eq!(body["stream"], true);
-        assert_eq!(body["thinking"], json!({"type": "adaptive", "display": "summarized"}));
+        assert_eq!(
+            body["thinking"],
+            json!({"type": "adaptive", "display": "summarized"})
+        );
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["cache_control"]["type"], "ephemeral");
         assert_eq!(body["fallbacks"], "default");
@@ -895,9 +1066,16 @@ mod tests {
         }
 
         let mut older = request(Wire::Messages, "http://x", "claude-old");
-        older.claude = ClaudeFeatures { adaptive_thinking: false, effort: false };
+        older.claude = ClaudeFeatures {
+            adaptive_thinking: false,
+            effort: false,
+        };
         let (_, body) = build_body(&older);
-        assert!(body.get("thinking").is_none() && body.get("output_config").is_none() && body.get("fallbacks").is_none());
+        assert!(
+            body.get("thinking").is_none()
+                && body.get("output_config").is_none()
+                && body.get("fallbacks").is_none()
+        );
     }
 
     #[test]
@@ -907,7 +1085,11 @@ mod tests {
         req.max_output = Some(8192);
         assert_eq!(build_body(&req).1["max_tokens"], 8192);
         req.max_output = Some(128000);
-        assert_eq!(build_body(&req).1["max_tokens"], 64000, "a higher cap doesn't raise the default");
+        assert_eq!(
+            build_body(&req).1["max_tokens"],
+            64000,
+            "a higher cap doesn't raise the default"
+        );
     }
 
     #[test]
@@ -923,7 +1105,9 @@ mod tests {
             assert!(is_context_overflow(message), "{message}");
         }
         assert!(!is_context_overflow("HTTP 400: invalid x-api-key"));
-        assert!(!is_context_overflow("The connection closed before the response finished."));
+        assert!(!is_context_overflow(
+            "The connection closed before the response finished."
+        ));
     }
 
     #[test]
@@ -951,12 +1135,23 @@ mod tests {
         assert_eq!((turn.input_tokens, turn.output_tokens), (15, 7));
         assert_eq!(
             deltas,
-            [Delta::Thinking("hmm".into()), Delta::Text("Hel".into()), Delta::Text("lo".into()), Delta::ToolStart("read_file".into())]
+            [
+                Delta::Thinking("hmm".into()),
+                Delta::Text("Hel".into()),
+                Delta::Text("lo".into()),
+                Delta::ToolStart("read_file".into())
+            ]
         );
-        assert_eq!(turn.calls[0].input.as_ref().unwrap(), &json!({"path": "a.rs"}));
+        assert_eq!(
+            turn.calls[0].input.as_ref().unwrap(),
+            &json!({"path": "a.rs"})
+        );
         let content = &turn.items[0]["content"];
         assert_eq!(turn.items[0]["role"], "assistant");
-        assert_eq!(content[0], json!({"type": "thinking", "thinking": "hmm", "signature": "SIG"}));
+        assert_eq!(
+            content[0],
+            json!({"type": "thinking", "thinking": "hmm", "signature": "SIG"})
+        );
         assert_eq!(content[1]["text"], "Hello");
         assert_eq!(content[2]["input"], json!({"path": "a.rs"}));
 
@@ -978,9 +1173,19 @@ mod tests {
             "tool_use",
         );
         let server = mock(vec![(200, sse(&events))]);
-        let turn = run(&request(Wire::Messages, &server.url, "m")).0.unwrap().unwrap();
-        assert_eq!(turn.calls[0].input.as_ref().unwrap_err(), "{\"path\": \"a\", oops");
-        assert_eq!(turn.items[0]["content"][0]["input"], json!({}), "history must still hold an object");
+        let turn = run(&request(Wire::Messages, &server.url, "m"))
+            .0
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            turn.calls[0].input.as_ref().unwrap_err(),
+            "{\"path\": \"a\", oops"
+        );
+        assert_eq!(
+            turn.items[0]["content"][0]["input"],
+            json!({}),
+            "history must still hold an object"
+        );
     }
 
     #[test]
@@ -995,11 +1200,19 @@ mod tests {
             json!({"type": "text", "text": "rest"}),
             json!({"type": "tool_use", "id": "kept", "name": "read_file", "input": {}}),
         ];
-        let kept: Vec<String> = replayable_blocks(blocks).iter().map(|b| text_of(&b["type"])).collect();
+        let kept: Vec<String> = replayable_blocks(blocks)
+            .iter()
+            .map(|b| text_of(&b["type"]))
+            .collect();
         assert_eq!(kept, ["text", "fallback", "thinking", "text", "tool_use"]);
 
         // Without a fallback, everything goes back unchanged except empty text and gaps.
-        let plain = vec![json!({"type": "thinking", "thinking": "a"}), Value::Null, json!({"type": "text", "text": ""}), json!({"type": "text", "text": "x"})];
+        let plain = vec![
+            json!({"type": "thinking", "thinking": "a"}),
+            Value::Null,
+            json!({"type": "text", "text": ""}),
+            json!({"type": "text", "text": "x"}),
+        ];
         assert_eq!(replayable_blocks(plain).len(), 2);
     }
 
@@ -1010,23 +1223,39 @@ mod tests {
             json!({"type": "message_stop"}),
         ];
         let server = mock(vec![(200, sse(&refusal))]);
-        let turn = run(&request(Wire::Messages, &server.url, "m")).0.unwrap().unwrap();
+        let turn = run(&request(Wire::Messages, &server.url, "m"))
+            .0
+            .unwrap()
+            .unwrap();
         assert_eq!(turn.stop, Stop::Refusal(Some("cyber".into())));
         assert!(turn.items.is_empty());
 
-        let cut_off = vec![json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})];
+        let cut_off = vec![
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ];
         let server = mock(vec![(200, sse(&cut_off))]);
-        let error = run(&request(Wire::Messages, &server.url, "m")).0.unwrap_err();
-        assert!(error.contains("closed before"), "a dropped stream must not look finished: {error}");
+        let error = run(&request(Wire::Messages, &server.url, "m"))
+            .0
+            .unwrap_err();
+        assert!(
+            error.contains("closed before"),
+            "a dropped stream must not look finished: {error}"
+        );
 
         let mid_error = vec![json!({"type": "error", "error": {"message": "overloaded"}})];
         let server = mock(vec![(200, sse(&mid_error))]);
-        assert_eq!(run(&request(Wire::Messages, &server.url, "m")).0.unwrap_err(), "overloaded");
+        assert_eq!(
+            run(&request(Wire::Messages, &server.url, "m"))
+                .0
+                .unwrap_err(),
+            "overloaded"
+        );
     }
 
     #[test]
     fn responses_stream_returns_output_items_verbatim() {
-        let reasoning = json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "abc", "summary": []});
+        let reasoning =
+            json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "abc", "summary": []});
         let call = json!({"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"a\"}"});
         let events = vec![
             json!({"type": "response.output_item.added", "item": {"type": "reasoning"}}),
@@ -1044,7 +1273,14 @@ mod tests {
         assert_eq!(turn.items, [reasoning, call]);
         assert_eq!(turn.calls[0].id, "call_1");
         assert_eq!((turn.input_tokens, turn.output_tokens), (3, 4));
-        assert_eq!(deltas, [Delta::Thinking("why".into()), Delta::Text("Hi".into()), Delta::ToolStart("read_file".into())]);
+        assert_eq!(
+            deltas,
+            [
+                Delta::Thinking("why".into()),
+                Delta::Text("Hi".into()),
+                Delta::ToolStart("read_file".into())
+            ]
+        );
 
         let requests = server.requests.lock().unwrap();
         let (path, headers, body) = &requests[0];
@@ -1060,15 +1296,22 @@ mod tests {
 
     #[test]
     fn responses_falls_back_to_stored_mode_when_store_false_is_refused() {
-        let done = sse(&[json!({"type": "response.completed", "response": {"status": "completed", "output": []}})]);
-        let refused = json!({"error": {"message": "Encrypted content is not supported with this model."}}).to_string();
+        let done = sse(&[
+            json!({"type": "response.completed", "response": {"status": "completed", "output": []}}),
+        ]);
+        let refused =
+            json!({"error": {"message": "Encrypted content is not supported with this model."}})
+                .to_string();
         let server = mock(vec![(400, refused), (200, done.clone()), (200, done)]);
         let req = request(Wire::Responses, &server.url, "gpt");
         assert_eq!(run(&req).0.unwrap().unwrap().stop, Stop::EndTurn);
         assert!(req.responses_stored.load(Ordering::Relaxed));
         run(&req).0.unwrap();
         let requests = server.requests.lock().unwrap();
-        let bodies: Vec<Value> = requests.iter().map(|r| serde_json::from_str(&r.2).unwrap()).collect();
+        let bodies: Vec<Value> = requests
+            .iter()
+            .map(|r| serde_json::from_str(&r.2).unwrap())
+            .collect();
         assert_eq!(bodies.len(), 3, "the refusal costs one extra request, once");
         assert_eq!(bodies[0]["store"], false);
         assert!(bodies[1].get("store").is_none() && bodies[1].get("include").is_none());
@@ -1077,17 +1320,28 @@ mod tests {
 
     #[test]
     fn responses_incomplete_and_failed_are_not_treated_as_success() {
-        let incomplete = sse(&[json!({"type": "response.incomplete", "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "output": [
-            {"type": "function_call", "call_id": "c", "name": "write_file", "arguments": "{\"path\":\"a\",\"con"}
-        ]}})]);
+        let incomplete = sse(&[
+            json!({"type": "response.incomplete", "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "output": [
+                {"type": "function_call", "call_id": "c", "name": "write_file", "arguments": "{\"path\":\"a\",\"con"}
+            ]}}),
+        ]);
         let server = mock(vec![(200, incomplete)]);
-        let turn = run(&request(Wire::Responses, &server.url, "gpt")).0.unwrap().unwrap();
+        let turn = run(&request(Wire::Responses, &server.url, "gpt"))
+            .0
+            .unwrap()
+            .unwrap();
         assert_eq!(turn.stop, Stop::MaxTokens);
         assert!(turn.calls[0].input.is_err());
 
-        let failed = sse(&[json!({"type": "response.failed", "response": {"error": {"message": "boom"}}})]);
+        let failed =
+            sse(&[json!({"type": "response.failed", "response": {"error": {"message": "boom"}}})]);
         let server = mock(vec![(200, failed)]);
-        assert_eq!(run(&request(Wire::Responses, &server.url, "gpt")).0.unwrap_err(), "boom");
+        assert_eq!(
+            run(&request(Wire::Responses, &server.url, "gpt"))
+                .0
+                .unwrap_err(),
+            "boom"
+        );
     }
 
     #[test]
@@ -1097,9 +1351,18 @@ mod tests {
             ": OPENROUTER PROCESSING\n\n{}: OPENROUTER PROCESSING\n\ndata: [DONE]\n\n",
             sse(&[
                 chunk(json!({"content": "Hi", "reasoning": "why"}), Value::Null),
-                chunk(json!({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "read_file", "arguments": ""}}]}), Value::Null),
-                chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"path\":"}}]}), Value::Null),
-                chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": "\"a\"}"}}, {"index": 1, "id": "c2", "function": {"name": "read_file", "arguments": "{\"path\":\"b\"}"}}]}), json!("tool_calls")),
+                chunk(
+                    json!({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "read_file", "arguments": ""}}]}),
+                    Value::Null
+                ),
+                chunk(
+                    json!({"tool_calls": [{"index": 0, "function": {"arguments": "{\"path\":"}}]}),
+                    Value::Null
+                ),
+                chunk(
+                    json!({"tool_calls": [{"index": 0, "function": {"arguments": "\"a\"}"}}, {"index": 1, "id": "c2", "function": {"name": "read_file", "arguments": "{\"path\":\"b\"}"}}]}),
+                    json!("tool_calls")
+                ),
                 json!({"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 9}}),
             ])
         );
@@ -1112,31 +1375,58 @@ mod tests {
         assert_eq!(turn.calls[1].id, "c2");
         assert_eq!((turn.input_tokens, turn.output_tokens), (8, 9));
         assert_eq!(turn.items[0]["content"], "Hi");
-        assert_eq!(turn.items[0]["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a\"}");
+        assert_eq!(
+            turn.items[0]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"a\"}"
+        );
         assert!(deltas.contains(&Delta::Thinking("why".into())));
 
         let requests = server.requests.lock().unwrap();
         let body: Value = serde_json::from_str(&requests[0].2).unwrap();
         assert_eq!(requests[0].0, "/v1/chat/completions");
-        assert_eq!(body["messages"][0], json!({"role": "system", "content": "be brief"}));
+        assert_eq!(
+            body["messages"][0],
+            json!({"role": "system", "content": "be brief"})
+        );
         assert_eq!(body["messages"][1]["content"], "hi");
         assert_eq!(body["tools"][0]["function"]["name"], "read_file");
     }
 
     #[test]
     fn chat_completions_reports_mid_stream_errors_and_length_stops() {
-        let server = mock(vec![(200, sse(&[json!({"error": {"code": 502, "message": "upstream died"}, "choices": [{"delta": {}, "finish_reason": "error"}]})]))]);
-        assert_eq!(run(&request(Wire::ChatCompletions, &server.url, "x")).0.unwrap_err(), "upstream died");
-        let length = sse(&[json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "write_file", "arguments": "{\"pa"}}]}, "finish_reason": "length"}]})]);
+        let server = mock(vec![(
+            200,
+            sse(&[
+                json!({"error": {"code": 502, "message": "upstream died"}, "choices": [{"delta": {}, "finish_reason": "error"}]}),
+            ]),
+        )]);
+        assert_eq!(
+            run(&request(Wire::ChatCompletions, &server.url, "x"))
+                .0
+                .unwrap_err(),
+            "upstream died"
+        );
+        let length = sse(&[
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "write_file", "arguments": "{\"pa"}}]}, "finish_reason": "length"}]}),
+        ]);
         let server = mock(vec![(200, length)]);
-        let turn = run(&request(Wire::ChatCompletions, &server.url, "x")).0.unwrap().unwrap();
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
         assert_eq!(turn.stop, Stop::MaxTokens);
     }
 
     #[test]
     fn an_empty_chat_completions_reply_leaves_nothing_to_replay() {
-        let server = mock(vec![(200, sse(&[json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]))]);
-        let turn = run(&request(Wire::ChatCompletions, &server.url, "x")).0.unwrap().unwrap();
+        let server = mock(vec![(
+            200,
+            sse(&[json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]),
+        )]);
+        let turn = run(&request(Wire::ChatCompletions, &server.url, "x"))
+            .0
+            .unwrap()
+            .unwrap();
         assert!(turn.items.is_empty());
         assert_eq!(turn.stop, Stop::EndTurn);
     }
@@ -1154,10 +1444,18 @@ mod tests {
 
         let bad_key = json!({"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}).to_string();
         let server = mock(vec![(401, bad_key)]);
-        assert_eq!(run(&request(Wire::Messages, &server.url, "m")).0.unwrap_err(), "HTTP 401: invalid x-api-key");
+        assert_eq!(
+            run(&request(Wire::Messages, &server.url, "m"))
+                .0
+                .unwrap_err(),
+            "HTTP 401: invalid x-api-key"
+        );
         assert_eq!(server.requests.lock().unwrap().len(), 1);
 
-        assert_eq!(error_text(502, "<html>bad gateway</html>"), "HTTP 502: <html>bad gateway</html>");
+        assert_eq!(
+            error_text(502, "<html>bad gateway</html>"),
+            "HTTP 502: <html>bad gateway</html>"
+        );
     }
 
     #[test]
@@ -1166,7 +1464,10 @@ mod tests {
         let server = mock(vec![(200, sse(&[json!({"type": "message_stop"})]))]);
         let req = request(Wire::Messages, &server.url, "m");
         assert!(stream(&req, &cancel, |_| {}).unwrap().is_none());
-        assert!(!wait(Duration::from_secs(60), &cancel), "a cancelled wait returns at once");
+        assert!(
+            !wait(Duration::from_secs(60), &cancel),
+            "a cancelled wait returns at once"
+        );
 
         let mut events = 0;
         let reader = std::io::Cursor::new("data: {}\n\ndata: {}\n\n");
@@ -1183,11 +1484,16 @@ mod tests {
     #[test]
     fn sse_parser_handles_multiline_data_and_crlf() {
         let mut seen = Vec::new();
-        let input = "event: x\r\ndata: a\r\ndata: b\r\n\r\ndata:c\n\n: comment\n\nretry: 5\n\ndata: end";
-        read_sse(std::io::Cursor::new(input), &AtomicBool::new(false), |data| {
-            seen.push(data.to_owned());
-            Ok(())
-        })
+        let input =
+            "event: x\r\ndata: a\r\ndata: b\r\n\r\ndata:c\n\n: comment\n\nretry: 5\n\ndata: end";
+        read_sse(
+            std::io::Cursor::new(input),
+            &AtomicBool::new(false),
+            |data| {
+                seen.push(data.to_owned());
+                Ok(())
+            },
+        )
         .unwrap();
         assert_eq!(seen, ["a\nb", "c", "end"]);
     }
@@ -1195,19 +1501,44 @@ mod tests {
     #[test]
     fn tool_results_use_each_formats_shape_and_stay_together() {
         let results = vec![
-            ("a".to_owned(), ToolOutput { text: "fine".into(), is_error: false }),
-            ("b".to_owned(), ToolOutput { text: "bad".into(), is_error: true }),
+            (
+                "a".to_owned(),
+                ToolOutput {
+                    text: "fine".into(),
+                    is_error: false,
+                },
+            ),
+            (
+                "b".to_owned(),
+                ToolOutput {
+                    text: "bad".into(),
+                    is_error: true,
+                },
+            ),
         ];
         let claude = tool_results(Wire::Messages, &results);
-        assert_eq!(claude.len(), 1, "Claude needs one user message with every result");
-        assert_eq!(claude[0]["content"][0], json!({"type": "tool_result", "tool_use_id": "a", "content": "fine"}));
+        assert_eq!(
+            claude.len(),
+            1,
+            "Claude needs one user message with every result"
+        );
+        assert_eq!(
+            claude[0]["content"][0],
+            json!({"type": "tool_result", "tool_use_id": "a", "content": "fine"})
+        );
         assert_eq!(claude[0]["content"][1]["is_error"], true);
 
         let responses = tool_results(Wire::Responses, &results);
-        assert_eq!(responses[1], json!({"type": "function_call_output", "call_id": "b", "output": "ERROR: bad"}));
+        assert_eq!(
+            responses[1],
+            json!({"type": "function_call_output", "call_id": "b", "output": "ERROR: bad"})
+        );
 
         let chat = tool_results(Wire::ChatCompletions, &results);
-        assert_eq!(chat[0], json!({"role": "tool", "tool_call_id": "a", "content": "fine"}));
+        assert_eq!(
+            chat[0],
+            json!({"role": "tool", "tool_call_id": "a", "content": "fine"})
+        );
     }
 
     #[test]
@@ -1218,12 +1549,36 @@ mod tests {
             {"id": "bare"}
         ]});
         let models = models_from(Provider::Claude, &claude);
-        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["new", "old", "bare"]);
-        assert_eq!(models[0].features, ClaudeFeatures { adaptive_thinking: true, effort: true });
-        assert_eq!((models[0].context, models[0].max_output), (Some(1000000), Some(128000)));
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["new", "old", "bare"]
+        );
+        assert_eq!(
+            models[0].features,
+            ClaudeFeatures {
+                adaptive_thinking: true,
+                effort: true
+            }
+        );
+        assert_eq!(
+            (models[0].context, models[0].max_output),
+            (Some(1000000), Some(128000))
+        );
         assert_eq!((models[2].context, models[2].max_output), (None, None));
-        assert_eq!(models[1].features, ClaudeFeatures { adaptive_thinking: false, effort: false });
-        assert_eq!(models[2].features, ClaudeFeatures { adaptive_thinking: false, effort: false });
+        assert_eq!(
+            models[1].features,
+            ClaudeFeatures {
+                adaptive_thinking: false,
+                effort: false
+            }
+        );
+        assert_eq!(
+            models[2].features,
+            ClaudeFeatures {
+                adaptive_thinking: false,
+                effort: false
+            }
+        );
 
         let openai = json!({"data": [
             {"id": "gpt-old", "created": 1},
@@ -1231,7 +1586,10 @@ mod tests {
             {"id": "gpt-new", "created": 5},
             {"id": "whisper-1", "created": 7}
         ]});
-        let ids: Vec<String> = models_from(Provider::OpenAi, &openai).into_iter().map(|m| m.id).collect();
+        let ids: Vec<String> = models_from(Provider::OpenAi, &openai)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert_eq!(ids, ["gpt-new", "gpt-old"]);
 
         let router = json!({"data": [
@@ -1256,15 +1614,22 @@ mod tests {
             assert_eq!(requests[0].0, "/v1/models?limit=1000");
             assert!(requests[0].1.contains(&"x-api-key: k".to_owned()));
         }
-        let server = mock(vec![(401, json!({"error": {"message": "nope"}}).to_string())]);
-        assert_eq!(list_models(Provider::Grok, &server.url, "k").unwrap_err(), "HTTP 401: nope");
+        let server = mock(vec![(
+            401,
+            json!({"error": {"message": "nope"}}).to_string(),
+        )]);
+        assert_eq!(
+            list_models(Provider::Grok, &server.url, "k").unwrap_err(),
+            "HTTP 401: nope"
+        );
     }
 
     /// Real TLS and JSON against a live public endpoint. Needs no credentials.
     #[test]
     #[ignore = "uses the network"]
     fn live_openrouter_model_list_without_a_key() {
-        let models = list_models(Provider::OpenRouter, &Provider::OpenRouter.base_url(), "").unwrap();
+        let models =
+            list_models(Provider::OpenRouter, &Provider::OpenRouter.base_url(), "").unwrap();
         assert!(models.len() > 10, "got {} models", models.len());
     }
 
@@ -1272,12 +1637,19 @@ mod tests {
     #[test]
     #[ignore = "uses the network"]
     fn live_claude_rejects_a_bad_key_with_a_readable_error() {
-        let error = list_models(Provider::Claude, &Provider::Claude.base_url(), "not-a-real-key").unwrap_err();
+        let error = list_models(
+            Provider::Claude,
+            &Provider::Claude.base_url(),
+            "not-a-real-key",
+        )
+        .unwrap_err();
         assert!(error.starts_with("HTTP 401"), "{error}");
     }
 
     fn live_turn(provider: Provider, model: String) {
-        let key = provider.api_key().unwrap_or_else(|| panic!("set {}", provider.key_env()));
+        let key = provider
+            .api_key()
+            .unwrap_or_else(|| panic!("set {}", provider.key_env()));
         let request = Request {
             wire: provider.wire(),
             base_url: provider.base_url(),
@@ -1285,8 +1657,13 @@ mod tests {
             model,
             system: "You are a test. Follow the user's instruction exactly.".to_owned(),
             tool_names: vec!["read_file"],
-            history: vec![user_message("Call read_file with path README.md and say nothing else.")],
-            claude: ClaudeFeatures { adaptive_thinking: true, effort: false },
+            history: vec![user_message(
+                "Call read_file with path README.md and say nothing else.",
+            )],
+            claude: ClaudeFeatures {
+                adaptive_thinking: true,
+                effort: false,
+            },
             max_output: None,
             responses_stored: Arc::new(AtomicBool::new(false)),
         };
@@ -1298,35 +1675,56 @@ mod tests {
         // Send the result back: this is what proves the history format is accepted.
         let mut history = request.history.clone();
         history.extend(turn.items);
-        let output = ToolOutput { text: "1\t# hello".to_owned(), is_error: false };
-        history.extend(tool_results(provider.wire(), &[(turn.calls[0].id.clone(), output)]));
+        let output = ToolOutput {
+            text: "1\t# hello".to_owned(),
+            is_error: false,
+        };
+        history.extend(tool_results(
+            provider.wire(),
+            &[(turn.calls[0].id.clone(), output)],
+        ));
         let followup = Request { history, ..request };
         let (result, deltas) = run(&followup);
         result.unwrap().unwrap();
-        assert!(deltas.iter().any(|delta| matches!(delta, Delta::Text(_))), "{deltas:?}");
+        assert!(
+            deltas.iter().any(|delta| matches!(delta, Delta::Text(_))),
+            "{deltas:?}"
+        );
     }
 
     #[test]
     #[ignore = "needs ANTHROPIC_API_KEY and spends money"]
     fn live_claude_tool_round_trip() {
-        live_turn(Provider::Claude, std::env::var("KALIPSO_TEST_MODEL").unwrap_or(DEFAULT_CLAUDE_MODEL.to_owned()));
+        live_turn(
+            Provider::Claude,
+            std::env::var("KALIPSO_TEST_MODEL").unwrap_or(DEFAULT_CLAUDE_MODEL.to_owned()),
+        );
     }
 
     #[test]
     #[ignore = "needs OPENAI_API_KEY and KALIPSO_TEST_MODEL, and spends money"]
     fn live_openai_tool_round_trip() {
-        live_turn(Provider::OpenAi, std::env::var("KALIPSO_TEST_MODEL").expect("set KALIPSO_TEST_MODEL"));
+        live_turn(
+            Provider::OpenAi,
+            std::env::var("KALIPSO_TEST_MODEL").expect("set KALIPSO_TEST_MODEL"),
+        );
     }
 
     #[test]
     #[ignore = "needs XAI_API_KEY and KALIPSO_TEST_MODEL, and spends money"]
     fn live_grok_tool_round_trip() {
-        live_turn(Provider::Grok, std::env::var("KALIPSO_TEST_MODEL").expect("set KALIPSO_TEST_MODEL"));
+        live_turn(
+            Provider::Grok,
+            std::env::var("KALIPSO_TEST_MODEL").expect("set KALIPSO_TEST_MODEL"),
+        );
     }
 
     #[test]
     #[ignore = "needs OPENROUTER_API_KEY and KALIPSO_TEST_MODEL, and spends money"]
     fn live_openrouter_tool_round_trip() {
-        live_turn(Provider::OpenRouter, std::env::var("KALIPSO_TEST_MODEL").expect("set KALIPSO_TEST_MODEL"));
+        live_turn(
+            Provider::OpenRouter,
+            std::env::var("KALIPSO_TEST_MODEL").expect("set KALIPSO_TEST_MODEL"),
+        );
     }
 }
