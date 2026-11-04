@@ -54,6 +54,10 @@ Ctrl+V pastes what you copied in Kalipso; use your terminal's paste (usually Ctr
 text from other programs. The gutter marks lines that differ from git's HEAD: green added, yellow
 changed, red for deleted lines.
 
+The gutter and tree also need nothing set up, but **language servers** do: **F12** goes to a definition,
+**Shift+F12** comes back, and **F8** moves between problems, which are also shown next to their lines.
+See [Language servers](#language-servers).
+
 **Terminal:** every other key goes to the shell. Alt+S enters scroll mode, and the wheel scrolls.
 
 **Chat:** Enter sends, Ctrl+J adds a line, Esc stops the agent, PgUp/PgDn scroll. `/model` switches
@@ -93,6 +97,19 @@ bind -n M-Right if -F '#{==:#{pane_current_command},kalipso}' 'send-keys M-Right
 bind -n M-Up    if -F '#{==:#{pane_current_command},kalipso}' 'send-keys M-Up'    'select-pane -U'
 bind -n M-Down  if -F '#{==:#{pane_current_command},kalipso}' 'send-keys M-Down'  'select-pane -D'
 ```
+
+## Language servers
+
+Kalipso uses whichever of these is installed: `rust-analyzer`, `pyright-langserver` or `pylsp`,
+`typescript-language-server`, `gopls`, `clangd`. For Rust that's `rustup component add rust-analyzer`.
+
+**Language servers run code from the project they open**, such as build scripts and macros, so opening
+a file never starts one. The first F12 or F8 in a project asks you. A yes is saved for that project in
+`~/.config/kalipso/config.json`, and the server then starts by itself there. API keys are removed from
+its environment, and it stops when Kalipso does.
+
+Only diagnostics and go-to-definition are supported. If a definition has several locations, the first
+is used.
 
 ## AI providers
 
@@ -168,8 +185,11 @@ them if that matters. An `a` answer isn't saved, so a resumed chat asks again.
 
 ```sh
 cargo test              # unit and integration tests, offline
-tests/e2e.sh            # drives the real binary in an isolated tmux, against tests/mock_llm.py
+tests/e2e.sh            # drives the real binary in an isolated tmux, against tests/mock_llm.py and tests/mock_lsp.py
 ```
+
+Both run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0` publishes a
+Linux x86_64 build as a GitHub release.
 
 Live tests are skipped by default. Some need no key; the rest make real, billed API calls:
 
@@ -183,7 +203,7 @@ OPENROUTER_API_KEY=... KALIPSO_TEST_MODEL=<model> cargo test -- --ignored live_o
 
 ## Not built yet
 
-LSP and go-to-definition, editor splits, multi-cursor, custom agents, MCP, a settings UI, in-app API
+Completion, hover and rename from language servers, editor splits, multi-cursor, custom agents, MCP, a settings UI, in-app API
 key entry, mouse forwarding to programs in the terminal pane, full Markdown rendering, and a Vim mode.
 
 ## License
