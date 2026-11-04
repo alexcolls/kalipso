@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
@@ -798,7 +799,13 @@ pub fn literal_regex(query: &str) -> Option<regex::Regex> {
 
 /// Reads a file as text, refusing anything that couldn't be saved back unchanged.
 pub fn load_text(path: &Path) -> Result<(String, bool), String> {
-    let size = fs::metadata(path).map_err(|e| e.to_string())?.len();
+    let meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    // A pipe blocks forever and a device like /dev/zero never ends, yet both report size 0.
+    // A project can contain either, or a symlink to one.
+    if !meta.is_file() {
+        return Err("not a regular file".to_owned());
+    }
+    let size = meta.len();
     if size > MAX_FILE_BYTES {
         return Err(format!("too large to edit ({} MB)", size / (1024 * 1024)));
     }
@@ -816,6 +823,17 @@ pub fn load_text(path: &Path) -> Result<(String, bool), String> {
     Ok((text, false))
 }
 
+/// Creates the temp file for a save. It holds what the real file holds, so it must never be
+/// readable by anyone the real file isn't, not even for the moment before it's renamed.
+fn open_temp(tmp: &Path, existing: Option<&fs::Metadata>) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    if let Some(meta) = existing {
+        options.mode(meta.permissions().mode() & 0o7777);
+    }
+    options.open(tmp)
+}
+
 /// Writes through a temp file and rename, so a crash can't leave a half-written file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -831,10 +849,12 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         std::process::id()
     ));
     let _ = fs::remove_file(&tmp);
+    let existing = fs::metadata(&target).ok();
     let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let mut file = open_temp(&tmp, existing.as_ref())?;
         file.write_all(bytes)?;
-        if let Ok(meta) = fs::metadata(&target) {
+        // The umask may have narrowed what open_temp asked for.
+        if let Some(meta) = &existing {
             file.set_permissions(meta.permissions())?;
         }
         file.sync_all()?;
@@ -1959,7 +1979,7 @@ mod tests {
 
     #[test]
     fn save_keeps_permissions_and_follows_symlinks_and_leaves_no_temp_file() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::os::unix::fs::symlink;
         let dir = temp_dir("save");
         let real = dir.join("real.sh");
         fs::write(&real, "old").unwrap();
@@ -2031,6 +2051,48 @@ mod tests {
         assert_eq!(editor.docs[0].conflict, Some(Conflict::Deleted));
         assert!(matches!(editor.save(), EditorCmd::None));
         assert!(path.exists(), "saving a deleted file recreates it");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pipes_and_devices_are_refused_instead_of_hanging() {
+        let dir = temp_dir("special");
+        let pipe = dir.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let zero = dir.join("zero");
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        for path in [pipe, zero, dir.clone()] {
+            // On a thread, so getting this wrong fails the test instead of hanging the suite.
+            let (done, result) = std::sync::mpsc::channel();
+            let opened = path.clone();
+            std::thread::spawn(move || done.send(load_text(&opened)));
+            let answer = result.recv_timeout(std::time::Duration::from_secs(5));
+            let error = answer
+                .unwrap_or_else(|_| panic!("{path:?} hung"))
+                .unwrap_err();
+            assert_eq!(error, "not a regular file", "{path:?}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_temp_file_for_a_private_file_is_private_from_the_start() {
+        let dir = temp_dir("tempmode");
+        let secret = dir.join(".env");
+        fs::write(&secret, "KEY=1").unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        let meta = fs::metadata(&secret).unwrap();
+        let file = open_temp(&dir.join("tmp"), Some(&meta)).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        write_atomic(&secret, b"KEY=2").unwrap();
+        assert_eq!(
+            fs::metadata(&secret).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
