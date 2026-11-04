@@ -1,0 +1,29 @@
+name: Release
+
+# Pushing a tag like v0.1.0 publishes a Linux x86_64 build. Other platforms aren't tested.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="kalipso-$TAG-x86_64-linux"
+          mkdir "$name"
+          cp target/release/kalipso README.md LICENSE "$name"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          gh release create "$TAG" "$name.tar.gz" "$name.tar.gz.sha256" --generate-notes --verify-tag
