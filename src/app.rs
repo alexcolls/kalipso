@@ -476,16 +476,14 @@ impl App {
         let models = match result {
             Ok(models) => models,
             Err(err) => {
-                // Features are only an optimisation: without them, requests use API defaults.
+                // Only an optimisation: without this, requests use API defaults.
                 if purpose != ModelsFor::Features {
                     self.message = Some(format!("Can't list {} models: {err}", provider.name()));
                 }
                 return;
             }
         };
-        if provider == Provider::Claude {
-            self.chats.remember_features(&models);
-        }
+        self.chats.remember_models(models.clone());
         if purpose == ModelsFor::Features {
             return;
         }
@@ -504,7 +502,8 @@ impl App {
     }
 
     fn create_chat(&mut self, agent: usize, provider: Provider, model: String) {
-        if provider == Provider::Claude {
+        // These two publish model limits. OpenAI's and Grok's lists don't.
+        if matches!(provider, Provider::Claude | Provider::OpenRouter) {
             self.chats.load_models(provider, ModelsFor::Features);
         }
         self.chats.create(agent, provider, model);

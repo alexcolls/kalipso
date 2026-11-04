@@ -94,7 +94,7 @@ pub enum ChatEvent {
 pub enum ModelsFor {
     NewChat(usize),
     Switch(u64),
-    /// Only to learn which request options each Claude model accepts.
+    /// Only to learn each model's limits and which request options it accepts.
     Features,
 }
 
@@ -291,7 +291,7 @@ enum State {
 struct Context<'a> {
     root: &'a Path,
     tx: &'a SyncSender<Event>,
-    features: &'a HashMap<String, ClaudeFeatures>,
+    models: &'a HashMap<String, ModelInfo>,
     endpoint_override: Option<&'a (String, String)>,
 }
 
@@ -354,7 +354,8 @@ impl Chat {
         format!("{} {}{mark}", self.agent.name, self.id)
     }
 
-    fn start_turn(&mut self, ctx: &Context) {
+    /// A request for this chat's provider and model, or an error entry if there's no key.
+    fn request(&mut self, ctx: &Context, system: String, tool_names: Vec<&'static str>, history: Vec<Value>) -> Option<Request> {
         let endpoint = match ctx.endpoint_override {
             Some((base, key)) => Some((base.clone(), key.clone())),
             None => self.provider.api_key().map(|key| (self.provider.base_url(), key)),
@@ -362,28 +363,31 @@ impl Chat {
         let Some((base_url, api_key)) = endpoint else {
             self.push(Kind::Error, format!("{} isn't set.", self.provider.key_env()));
             self.state = State::Idle;
-            return;
+            return None;
         };
+        let info = ctx.models.get(&self.model);
+        let is_default = self.model == DEFAULT_CLAUDE_MODEL;
+        Some(Request {
+            wire: self.provider.wire(),
+            base_url,
+            api_key,
+            model: self.model.clone(),
+            system,
+            tool_names,
+            history,
+            claude: info.map_or(ClaudeFeatures { adaptive_thinking: is_default, effort: is_default }, |model| model.features),
+            max_output: info.and_then(|model| model.max_output),
+            responses_stored: self.responses_stored.clone(),
+        })
+    }
+
+    fn start_turn(&mut self, ctx: &Context) {
+        let Some(request) = self.request(ctx, self.system.clone(), self.agent.tools.to_vec(), self.history.clone()) else { return };
         self.turns += 1;
         self.generation += 1;
         self.cancel = Arc::new(AtomicBool::new(false));
         self.state = State::Streaming;
         self.activity = Some("thinking".to_owned());
-        let claude = ctx.features.get(&self.model).copied().unwrap_or(ClaudeFeatures {
-            adaptive_thinking: self.model == DEFAULT_CLAUDE_MODEL,
-            effort: self.model == DEFAULT_CLAUDE_MODEL,
-        });
-        let request = Request {
-            wire: self.provider.wire(),
-            base_url,
-            api_key,
-            model: self.model.clone(),
-            system: self.system.clone(),
-            tool_names: self.agent.tools.to_vec(),
-            history: self.history.clone(),
-            claude,
-            responses_stored: self.responses_stored.clone(),
-        };
         let (tx, chat, generation, cancel) = (ctx.tx.clone(), self.id, self.generation, self.cancel.clone());
         self.worker = Some(thread::spawn(move || {
             let result = llm::stream(&request, &cancel, |delta| {
@@ -631,7 +635,7 @@ pub struct Chats {
     next_id: u64,
     root: PathBuf,
     tx: SyncSender<Event>,
-    pub features: HashMap<String, ClaudeFeatures>,
+    pub models: HashMap<String, ModelInfo>,
     config_path: PathBuf,
     config: Value,
     hits: TabHits,
@@ -661,7 +665,7 @@ impl Chats {
             next_id: 1,
             root,
             tx,
-            features: HashMap::new(),
+            models: HashMap::new(),
             config_path,
             config,
             hits: TabHits::default(),
@@ -701,8 +705,8 @@ impl Chats {
         });
     }
 
-    pub fn remember_features(&mut self, models: &[ModelInfo]) {
-        self.features.extend(models.iter().map(|model| (model.id.clone(), model.features)));
+    pub fn remember_models(&mut self, models: Vec<ModelInfo>) {
+        self.models.extend(models.into_iter().map(|model| (model.id.clone(), model)));
     }
 
     pub fn create(&mut self, agent: usize, provider: Provider, model: String) {
@@ -781,7 +785,7 @@ impl Chats {
         if self.tabs[index].generation != generation {
             return false; // A late message from something that was cancelled.
         }
-        let ctx = Context { root: &self.root, tx: &self.tx, features: &self.features, endpoint_override: self.endpoint_override.as_ref() };
+        let ctx = Context { root: &self.root, tx: &self.tx, models: &self.models, endpoint_override: self.endpoint_override.as_ref() };
         let chat = &mut self.tabs[index];
         match event {
             ChatEvent::Delta(Delta::Text(text)) => {
@@ -810,7 +814,7 @@ impl Chats {
         if self.tabs.is_empty() {
             return if key.code == KeyCode::Enter { ChatCmd::NewChat } else { ChatCmd::None };
         }
-        let ctx = Context { root: &self.root, tx: &self.tx, features: &self.features, endpoint_override: self.endpoint_override.as_ref() };
+        let ctx = Context { root: &self.root, tx: &self.tx, models: &self.models, endpoint_override: self.endpoint_override.as_ref() };
         let chat = &mut self.tabs[self.active];
         match key.code {
             KeyCode::PageUp => {
@@ -1419,10 +1423,11 @@ mod tests {
         rig.settle();
         assert!(rig.request(0).get("thinking").is_none(), "unknown model: leave it to API defaults");
         let features = ClaudeFeatures { adaptive_thinking: true, effort: true };
-        rig.chats.remember_features(&[ModelInfo { id: "test-model".to_owned(), features }]);
+        rig.chats.remember_models(vec![ModelInfo { id: "test-model".to_owned(), features, max_output: Some(8192) }]);
         rig.say("two");
         rig.settle();
         assert_eq!(rig.request(1)["thinking"]["type"], "adaptive");
+        assert_eq!(rig.request(1)["max_tokens"], 8192, "a model's lower output limit is respected");
         rig.cleanup();
     }
 

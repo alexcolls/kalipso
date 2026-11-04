@@ -17,7 +17,7 @@ const ANTHROPIC_VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 /// Models that accept the server-side `fallbacks` parameter.
 const FALLBACK_MODELS: [&str; 4] = ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"];
-const MAX_TOKENS: u32 = 64000;
+const MAX_TOKENS: u64 = 64000;
 const MAX_RETRIES: u32 = 2;
 /// Applies to each read, so long streams are fine as long as data keeps arriving.
 const READ_TIMEOUT: Duration = Duration::from_secs(300);
@@ -108,6 +108,8 @@ pub struct Request {
     pub tool_names: Vec<&'static str>,
     pub history: Vec<Value>,
     pub claude: ClaudeFeatures,
+    /// The model's output limit, where the provider publishes one.
+    pub max_output: Option<u64>,
     /// Set once a provider refuses `store: false`, so later requests skip it.
     pub responses_stored: Arc<AtomicBool>,
 }
@@ -205,7 +207,7 @@ pub fn build_body(request: &Request) -> (&'static str, Value) {
         Wire::Messages => {
             let mut body = json!({
                 "model": request.model,
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": request.max_output.map_or(MAX_TOKENS, |cap| cap.min(MAX_TOKENS)),
                 "stream": true,
                 "system": request.system,
                 "messages": request.history,
@@ -703,6 +705,8 @@ impl Parser for ChatParser {
 pub struct ModelInfo {
     pub id: String,
     pub features: ClaudeFeatures,
+    /// Output limit in tokens, where the provider publishes one.
+    pub max_output: Option<u64>,
 }
 
 /// Lists the chat models a provider offers, newest first where the API gives dates.
@@ -761,6 +765,7 @@ fn models_from(provider: Provider, parsed: &Value) -> Vec<ModelInfo> {
                     adaptive_thinking: capabilities["thinking"]["types"]["adaptive"]["supported"] == true,
                     effort: capabilities["effort"]["supported"] == true,
                 },
+                max_output: model["max_tokens"].as_u64(),
             })
         })
         .collect()
@@ -841,6 +846,7 @@ mod tests {
             tool_names: vec!["read_file", "write_file"],
             history: vec![user_message("hi")],
             claude: ClaudeFeatures { adaptive_thinking: true, effort: true },
+            max_output: None,
             responses_stored: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -880,6 +886,16 @@ mod tests {
         older.claude = ClaudeFeatures { adaptive_thinking: false, effort: false };
         let (_, body) = build_body(&older);
         assert!(body.get("thinking").is_none() && body.get("output_config").is_none() && body.get("fallbacks").is_none());
+    }
+
+    #[test]
+    fn max_tokens_respects_a_models_lower_output_limit() {
+        let mut req = request(Wire::Messages, "http://x", "old-model");
+        assert_eq!(build_body(&req).1["max_tokens"], 64000);
+        req.max_output = Some(8192);
+        assert_eq!(build_body(&req).1["max_tokens"], 8192);
+        req.max_output = Some(128000);
+        assert_eq!(build_body(&req).1["max_tokens"], 64000, "a higher cap doesn't raise the default");
     }
 
     #[test]
@@ -1239,6 +1255,7 @@ mod tests {
             tool_names: vec!["read_file"],
             history: vec![user_message("Call read_file with path README.md and say nothing else.")],
             claude: ClaudeFeatures { adaptive_thinking: true, effort: false },
+            max_output: None,
             responses_stored: Arc::new(AtomicBool::new(false)),
         };
         let (result, _) = run(&request);
