@@ -182,12 +182,21 @@ pub enum Then {
     ChatProvider(usize),
     ChatModel(usize, Provider),
     SwitchModel(u64),
+    OpenFile,
 }
 
 pub enum Modal {
     Input { title: String, input: Buffer, then: Then },
     Confirm { title: String, then: Then },
-    Pick { title: String, items: Vec<String>, filter: String, selected: usize, then: Then },
+    Pick {
+        title: String,
+        items: Vec<String>,
+        filter: String,
+        /// Indexes into `items` that match the filter, best first.
+        shown: Vec<usize>,
+        selected: usize,
+        then: Then,
+    },
 }
 
 impl Modal {
@@ -199,14 +208,56 @@ impl Modal {
     }
 
     fn pick(title: impl Into<String>, items: Vec<String>, then: Then) -> Modal {
-        Modal::Pick { title: title.into(), items, filter: String::new(), selected: 0, then }
+        let shown = (0..items.len()).collect();
+        Modal::Pick { title: title.into(), items, filter: String::new(), shown, selected: 0, then }
     }
 }
 
-/// Items containing the filter text, ignoring case.
-fn filtered<'a>(items: &'a [String], filter: &str) -> Vec<&'a String> {
-    let filter = filter.to_lowercase();
-    items.iter().filter(|item| item.to_lowercase().contains(&filter)).collect()
+/// How well `query` matches `item`, or `None` if its letters don't appear in order. Ignores
+/// case, and favours runs of letters, word starts, the file name, and short items.
+fn fuzzy_score(item: &str, query: &str) -> Option<i64> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let item = item.to_lowercase();
+    let query = query.to_lowercase();
+    let mut wanted = query.chars().peekable();
+    let mut score = 0;
+    let mut previous = None;
+    let mut previous_matched = false;
+    for c in item.chars() {
+        let matched = wanted.peek() == Some(&c);
+        if matched {
+            wanted.next();
+            score += 1;
+            if previous_matched {
+                score += 4;
+            }
+            if previous.is_none_or(|p: char| !p.is_alphanumeric()) {
+                score += 6;
+            }
+        }
+        previous_matched = matched;
+        previous = Some(c);
+    }
+    if wanted.peek().is_some() {
+        return None;
+    }
+    let name_start = item.rfind('/').map_or(0, |slash| slash + 1);
+    if item[name_start..].contains(&query) {
+        score += 40;
+    } else if item.contains(&query) {
+        score += 20;
+    }
+    Some(score * 16 - item.chars().count() as i64)
+}
+
+/// Indexes of the items matching `filter`, best first. Ties keep the original order.
+fn rank(items: &[String], filter: &str) -> Vec<usize> {
+    let mut scored: Vec<(i64, usize)> =
+        items.iter().enumerate().filter_map(|(index, item)| fuzzy_score(item, filter).map(|score| (score, index))).collect();
+    scored.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
+    scored.into_iter().map(|(_, index)| index).collect()
 }
 
 pub struct App {
@@ -369,8 +420,22 @@ impl App {
         self.set_focus(Focus::Chat);
     }
 
+    fn find_file(&mut self) {
+        let items = files::all_files(&self.root);
+        if items.is_empty() {
+            self.message = Some("No files found in this project.".to_owned());
+        } else {
+            self.modal = Some(Modal::pick("Open file", items, Then::OpenFile));
+        }
+    }
+
     /// Keys handled before the focused pane sees them, including the terminal pane.
     fn on_global_key(&mut self, key: KeyEvent) -> bool {
+        // Not in the terminal pane, where Ctrl+P belongs to the shell.
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') && self.focus != Focus::Terminal {
+            self.find_file();
+            return true;
+        }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
             let worry = match (self.editor.has_unsaved(), self.chats.any_busy()) {
                 (true, true) => Some("Unsaved changes will be lost and running agents stopped. Quit?"),
@@ -546,24 +611,26 @@ impl App {
                     input.edit_key(key, 1, &self.clipboard.replace('\n', " "));
                 }
             },
-            Modal::Pick { items, filter, selected, .. } => {
-                let shown = filtered(items, filter).len();
+            Modal::Pick { items, filter, shown, selected, .. } => {
+                let last = shown.len().saturating_sub(1);
                 match key.code {
                     KeyCode::Esc => self.modal = None,
                     KeyCode::Up => *selected = selected.saturating_sub(1),
-                    KeyCode::Down => *selected = (*selected + 1).min(shown.saturating_sub(1)),
+                    KeyCode::Down => *selected = (*selected + 1).min(last),
                     KeyCode::PageUp => *selected = selected.saturating_sub(10),
-                    KeyCode::PageDown => *selected = (*selected + 10).min(shown.saturating_sub(1)),
+                    KeyCode::PageDown => *selected = (*selected + 10).min(last),
                     KeyCode::Backspace => {
                         filter.pop();
+                        *shown = rank(items, filter);
                         *selected = 0;
                     }
                     KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                         filter.push(c);
+                        *shown = rank(items, filter);
                         *selected = 0;
                     }
                     KeyCode::Enter => {
-                        let choice = filtered(items, filter).get(*selected).map(|item| (*item).clone());
+                        let choice = shown.get(*selected).map(|&index| items[index].clone());
                         if let Some(choice) = choice
                             && let Some(Modal::Pick { then, .. }) = self.modal.take()
                         {
@@ -587,6 +654,11 @@ impl App {
         let text = |err: std::io::Error| err.to_string();
         match then {
             Then::Quit => self.quit(),
+            Then::OpenFile => {
+                let path = self.root.join(value);
+                self.files.reveal(&path);
+                self.open_file(&path);
+            }
             Then::CloseDoc(index) => self.editor.close(index),
             Then::CloseChat(id) => self.chats.close(id),
             Then::ChatAgent => {
@@ -699,8 +771,9 @@ impl App {
         self.needs_draw = true;
         match &mut self.modal {
             Some(Modal::Input { input, .. }) => input.insert(&text.replace(['\r', '\n'], " ")),
-            Some(Modal::Pick { filter, selected, .. }) => {
+            Some(Modal::Pick { items, filter, shown, selected, .. }) => {
                 filter.push_str(&text.replace(['\r', '\n'], " "));
+                *shown = rank(items, filter);
                 *selected = 0;
             }
             Some(Modal::Confirm { .. }) => {}
@@ -804,10 +877,11 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
     let screen = frame.area();
     let (title, list_rows) = match modal {
         Modal::Input { title, .. } | Modal::Confirm { title, .. } => (title, 0),
-        Modal::Pick { title, items, filter, .. } => (title, filtered(items, filter).len().clamp(1, 14) as u16 + 1),
+        Modal::Pick { title, shown, .. } => (title, shown.len().clamp(1, 14) as u16 + 1),
     };
+    // Only rows that can be visible, because a file picker may hold thousands of items.
     let wanted = match modal {
-        Modal::Pick { items, .. } => items.iter().map(|item| item.width().min(200) as u16 + 4).max().unwrap_or(0),
+        Modal::Pick { items, shown, .. } => shown.iter().take(100).map(|&index| items[index].width().min(200) as u16 + 4).max().unwrap_or(0),
         _ => 0,
     };
     let width = (title.width() as u16 + 6).max(wanted).clamp(44, 96).min(screen.width);
@@ -839,20 +913,19 @@ fn draw_modal(frame: &mut Frame, modal: &Modal) {
             frame.render_widget(Paragraph::new(render_line(line, &[], selected, left, inner.width as usize)), inner);
             frame.set_cursor_position((inner.x + (display - left) as u16, inner.y));
         }
-        Modal::Pick { items, filter, selected, .. } => {
-            let matches = filtered(items, filter);
+        Modal::Pick { items, filter, shown, selected, .. } => {
             let rows = inner.height.saturating_sub(1) as usize;
             let top = (*selected + 1).saturating_sub(rows);
             let mut lines = vec![Line::from(vec![
                 Span::styled("filter: ", Style::new().fg(Color::DarkGray)),
                 Span::raw(filter.clone()),
             ])];
-            if matches.is_empty() {
+            if shown.is_empty() {
                 lines.push(Line::from(Span::styled("(no matches)", Style::new().fg(Color::DarkGray))));
             }
-            for (index, item) in matches.iter().enumerate().skip(top).take(rows) {
-                let style = if index == *selected { Style::new().fg(Color::Black).bg(Color::Yellow) } else { Style::new() };
-                lines.push(Line::from(Span::styled((*item).clone(), style)));
+            for (row, &index) in shown.iter().enumerate().skip(top).take(rows) {
+                let style = if row == *selected { Style::new().fg(Color::Black).bg(Color::Yellow) } else { Style::new() };
+                lines.push(Line::from(Span::styled(items[index].clone(), style)));
             }
             frame.render_widget(Paragraph::new(lines), inner);
             frame.set_cursor_position((inner.x + 8 + filter.width() as u16, inner.y));
@@ -895,6 +968,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kalipso-app-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
         let (tx, _rx) = mpsc::sync_channel(8);
         (App::new(dir.clone(), tx), dir)
     }
@@ -1040,6 +1114,44 @@ mod tests {
         for title in ["1 Files", "2 Terminal", "3 Editor", "4 Chat"] {
             assert!(text.contains(title), "missing {title}");
         }
+    }
+
+    #[test]
+    fn fuzzy_matching_ranks_what_you_probably_meant_first() {
+        let items: Vec<String> = ["tests/app_helpers/mod.rs", "src/chat.rs", "src/app.rs", "docs/a/p/p.md", "README.md"].map(String::from).to_vec();
+        let top = |query: &str| rank(&items, query).first().map(|&index| items[index].as_str());
+        assert_eq!(top("app"), Some("src/app.rs"), "the file name beats a folder name");
+        assert_eq!(top("chat"), Some("src/chat.rs"));
+        assert_eq!(top("CHAT"), Some("src/chat.rs"), "case doesn't matter");
+        assert_eq!(top("schr"), Some("src/chat.rs"), "letters may have gaps");
+        assert_eq!(top("zzz"), None);
+        assert_eq!(rank(&items, ""), [0, 1, 2, 3, 4], "no filter keeps the original order");
+        assert_eq!(fuzzy_score("abc", "cba"), None, "order matters");
+    }
+
+    #[test]
+    fn ctrl_p_finds_a_file_and_stays_out_of_the_terminals_way() {
+        let (mut app, dir) = app_in("ctrlp");
+        fs::create_dir_all(dir.join("src/deep")).unwrap();
+        fs::write(dir.join("src/deep/needle.rs"), "found it").unwrap();
+        fs::write(dir.join(".gitignore"), "skipped.txt\n").unwrap();
+        fs::write(dir.join("skipped.txt"), "").unwrap();
+        app.files.refresh();
+
+        press(&mut app, KeyCode::Char('2'), KeyModifiers::ALT);
+        press(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(app.modal.is_none(), "the shell uses Ctrl+P");
+
+        press(&mut app, KeyCode::Char('1'), KeyModifiers::ALT);
+        press(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        let Some(Modal::Pick { items, .. }) = &app.modal else { panic!("expected the picker") };
+        assert!(!items.iter().any(|item| item == "skipped.txt"));
+        type_text(&mut app, "ndl");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.editor.docs[0].buf.text(), "found it");
+        assert_eq!(app.files.rows[app.files.selected].name, "needle.rs", "the tree reveals it");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Every pane has content, and a popup is open, at every small terminal size.

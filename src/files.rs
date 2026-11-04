@@ -11,7 +11,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub const HINTS: &str = "Enter open  ←→ fold  n file  N folder  r rename  d delete  . hidden  R refresh";
+pub const HINTS: &str = "Enter open  Ctrl+P find  ←→ fold  n file  N folder  r rename  d delete  . hidden  R refresh";
+
+const MAX_LISTED_FILES: usize = 100_000;
 
 pub struct Row {
     pub path: PathBuf,
@@ -65,6 +67,23 @@ fn list_dir(dir: &Path, show_hidden: bool) -> Vec<(PathBuf, String, bool)> {
         .collect();
     entries.sort_by_cached_key(|(_, name, is_dir)| (!*is_dir, name.to_lowercase()));
     entries
+}
+
+/// Every file under `root` as a relative path, respecting .gitignore. Dotfiles are included,
+/// since `.github/ci.yml` and the like are worth finding.
+// ponytail: walks on each Ctrl+P. Cache and watch if a huge repo makes this feel slow.
+pub fn all_files(root: &Path) -> Vec<String> {
+    let mut walk = WalkBuilder::new(root);
+    walk.hidden(false).require_git(false).filter_entry(|entry| entry.file_name() != ".git");
+    let mut files: Vec<String> = walk
+        .build()
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| entry.path().strip_prefix(root).ok().map(|path| path.display().to_string()))
+        .take(MAX_LISTED_FILES)
+        .collect();
+    files.sort();
+    files
 }
 
 /// Joins a typed relative path onto `base`, refusing anything that could leave it.
@@ -329,6 +348,22 @@ mod tests {
         assert!(tree.check_disk());
         assert_eq!(names(&tree), ["sub", "a.txt", "b.txt"]);
         assert_eq!(tree.rows[tree.selected].name, "b.txt", "selection follows the path");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn all_files_finds_nested_and_dot_files_but_not_ignored_ones() {
+        let dir = temp_dir("all");
+        fs::create_dir_all(dir.join("src/deep")).unwrap();
+        fs::create_dir_all(dir.join(".github")).unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("target")).unwrap();
+        fs::write(dir.join(".gitignore"), "target\n").unwrap();
+        fs::write(dir.join("src/deep/a.rs"), "").unwrap();
+        fs::write(dir.join(".github/ci.yml"), "").unwrap();
+        fs::write(dir.join(".git/config"), "").unwrap();
+        fs::write(dir.join("target/out"), "").unwrap();
+        assert_eq!(all_files(&dir), [".github/ci.yml", ".gitignore", "src/deep/a.rs"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
