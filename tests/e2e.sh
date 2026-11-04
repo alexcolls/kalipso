@@ -112,11 +112,13 @@ chmod +x "$CONFIG/bin/rust-analyzer"
 
 # `env`, because tmux overwrites SHELL in new panes. Plain sh keeps results independent of
 # anyone's shell config. Only Claude has a key, pointed at the mock, and the real config is
-# left alone.
+# left alone. The exit status goes to a file because tmux linked with libutempter, like
+# Ubuntu's, can leave #{pane_dead_status} empty for good.
 "${T[@]}" new-session -d -s kalipso -x 140 -y 45 -c "$WORK" env SHELL=/bin/sh \
     PATH="$CONFIG/bin:$PATH" MOCK_LSP_LOG="$CONFIG/lsp.log" \
     ANTHROPIC_API_KEY=e2e-test-key ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$CONFIG/port")/v1" \
-    XDG_CONFIG_HOME="$CONFIG" XDG_DATA_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= "$BIN"
+    XDG_CONFIG_HOME="$CONFIG" XDG_DATA_HOME="$CONFIG" OPENAI_API_KEY= XAI_API_KEY= OPENROUTER_API_KEY= \
+    sh -c '"$0"; echo $? > "$XDG_CONFIG_HOME/exit-status"' "$BIN"
 "${T[@]}" set-option -s set-clipboard on
 expect "starts with all panes" "1 Files"
 expect "terminal pane visible" "2 Terminal"
@@ -383,10 +385,10 @@ expect "a resumed chat keeps working" "Hello from the mock."
 "${T[@]}" set-option -t kalipso remain-on-exit on >/dev/null
 key C-q
 for i in $(seq 50); do
-    [ "$("${T[@]}" display-message -p -t kalipso '#{pane_dead}')" = 1 ] && break
+    [ -s "$CONFIG/exit-status" ] && break
     sleep 0.1
 done
-if [ "$("${T[@]}" display-message -p -t kalipso '#{pane_dead_status}')" = 0 ]; then
+if [ "$(cat "$CONFIG/exit-status" 2>/dev/null)" = 0 ]; then
     pass "Ctrl+Q exits cleanly"
 else
     fail "Ctrl+Q exits cleanly"
