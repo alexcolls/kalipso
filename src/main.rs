@@ -4,6 +4,7 @@ mod editor;
 mod files;
 mod git;
 mod llm;
+mod lsp;
 mod term;
 mod tools;
 

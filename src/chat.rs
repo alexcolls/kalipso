@@ -1183,6 +1183,33 @@ impl Chats {
             self.config["models"] = json!({});
         }
         self.config["models"][provider.id()] = json!(model);
+        self.save_config()
+    }
+
+    /// Whether the user has okayed this language server for this project.
+    pub fn trusts_server(&self, name: &str) -> bool {
+        let project = self.root.to_string_lossy();
+        self.config["trusted_servers"][project.as_ref()]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|known| known == name))
+    }
+
+    pub fn trust_server(&mut self, name: &str) -> Result<(), String> {
+        let project = self.root.to_string_lossy().into_owned();
+        if !self.config["trusted_servers"].is_object() {
+            self.config["trusted_servers"] = json!({});
+        }
+        let names = &mut self.config["trusted_servers"][&project];
+        if !names.is_array() {
+            *names = json!([]);
+        }
+        if let Some(list) = names.as_array_mut() {
+            list.push(json!(name));
+        }
+        self.save_config()
+    }
+
+    fn save_config(&self) -> Result<(), String> {
         let text = serde_json::to_string_pretty(&self.config).map_err(|err| err.to_string())?;
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;

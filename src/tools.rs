@@ -29,7 +29,7 @@ const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const SEARCH_MAX_LINE_CHARS: usize = 300;
 
 /// Removed from commands agents run, so a prompt-injected command can't simply read them.
-const SECRET_VARS: [&str; 5] = [
+pub const SECRET_VARS: [&str; 5] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
@@ -622,7 +622,7 @@ impl Capture {
     }
 }
 
-fn kill_group(pid: u32) {
+pub fn kill_group(pid: u32) {
     // SAFETY: kill has no memory effects. The child leads its own group (process_group(0)),
     // so the negative pid only reaches that command and anything it started.
     unsafe {

@@ -20,6 +20,7 @@ use crate::editor::{self, Buffer, Editor, EditorCmd, SELECTION_BG, col_to_displa
 use crate::files::{self, FileTree, FilesCmd, safe_join};
 use crate::git;
 use crate::llm::{ModelInfo, Provider};
+use crate::lsp::{self, LspEvent, SERVERS, Servers};
 use crate::term::Terminals;
 use crate::tools;
 
@@ -51,6 +52,14 @@ pub enum Event {
         result: Result<Vec<ModelInfo>, String>,
     },
     Git(Option<git::Snapshot>),
+    Lsp {
+        server: usize,
+        message: serde_json::Value,
+    },
+    LspExit {
+        server: usize,
+        reason: String,
+    },
     SearchDone {
         query: String,
         hits: Vec<tools::SearchHit>,
@@ -227,6 +236,7 @@ pub enum Then {
     OpenFile,
     SearchProject,
     OpenMatch(String),
+    StartServer(usize),
 }
 
 pub enum Modal {
@@ -329,6 +339,13 @@ fn rank(items: &[String], filter: &str) -> Vec<usize> {
     scored.into_iter().map(|(_, index)| index).collect()
 }
 
+/// What to do once a language server the user just okayed is running.
+#[derive(Clone, Copy)]
+enum Retry {
+    Definition,
+    Problems,
+}
+
 /// A mouse selection over what's on screen in the terminal or chat pane.
 struct TextSelection {
     pane: Focus,
@@ -391,6 +408,7 @@ pub struct App {
     pub editor: Editor,
     pub terminals: Terminals,
     pub chats: Chats,
+    pub servers: Servers,
     pub modal: Option<Modal>,
     /// Shown in the status line until the next key press.
     pub message: Option<String>,
@@ -399,6 +417,9 @@ pub struct App {
     last_search: String,
     ticks: u32,
     git_running: bool,
+    pending_retry: Option<Retry>,
+    /// Where the user was when they asked for a definition.
+    definition_asked: Option<(usize, u64, editor::Pos)>,
 }
 
 impl App {
@@ -408,6 +429,7 @@ impl App {
             editor: Editor::default(),
             terminals: Terminals::new(root.clone(), tx.clone()),
             chats: Chats::new(root.clone(), tx.clone()),
+            servers: Servers::new(root.clone(), tx.clone()),
             root,
             tx,
             focus: Focus::Files,
@@ -423,6 +445,128 @@ impl App {
             last_search: String::new(),
             ticks: 0,
             git_running: false,
+            pending_retry: None,
+            definition_asked: None,
+        }
+    }
+
+    /// The running server for the active file. If there isn't one, this explains why or asks
+    /// to start one, since language servers run code from the project they open.
+    fn server_for_active_doc(&mut self, retry: Retry) -> Option<usize> {
+        let path = self.editor.docs.get(self.editor.active)?.path.clone()?;
+        let Some(index) = self.servers.index_for(&path) else {
+            let names = lsp::server_names_for(&path);
+            self.message = Some(if names.is_empty() {
+                "No language server is known for this kind of file.".to_owned()
+            } else {
+                format!(
+                    "No language server found. Install {} to use this.",
+                    names.join(" or ")
+                )
+            });
+            return None;
+        };
+        if self.servers.is_running(index) {
+            return Some(index);
+        }
+        self.pending_retry = Some(retry);
+        let title = format!(
+            "Start {}? It can run code from this project.",
+            SERVERS[index].name
+        );
+        self.modal = Some(Modal::Confirm {
+            title,
+            then: Then::StartServer(index),
+        });
+        None
+    }
+
+    fn go_to_definition(&mut self) {
+        if let Some(index) = self.server_for_active_doc(Retry::Definition) {
+            self.servers.sync(&self.editor.docs);
+            let doc = &self.editor.docs[self.editor.active];
+            self.servers.definition(index, doc);
+            self.message = Some("Looking for the definition...".to_owned());
+            self.definition_asked = self.editor_position();
+        }
+    }
+
+    /// Where the user is in the editor, or `None` if they're not there.
+    fn editor_position(&self) -> Option<(usize, u64, editor::Pos)> {
+        if self.focus != Focus::Editor || self.modal.is_some() {
+            return None;
+        }
+        let doc = self.editor.docs.get(self.editor.active)?;
+        Some((self.editor.active, doc.buf.revision(), doc.buf.cursor))
+    }
+
+    fn next_problem(&mut self) {
+        if self.server_for_active_doc(Retry::Problems).is_some() {
+            self.message = Some(self.editor.next_problem());
+        }
+    }
+
+    fn start_server(&mut self, index: usize) {
+        let name = SERVERS[index].name;
+        if let Err(err) = self.servers.start(index) {
+            self.message = Some(format!("Can't start {name}: {err}"));
+        }
+    }
+
+    /// Starts servers this project has okayed, and keeps all of them up to date.
+    fn tend_servers(&mut self) {
+        for path in self
+            .editor
+            .docs
+            .iter()
+            .filter(|doc| !doc.is_proposal())
+            .filter_map(|doc| doc.path.clone())
+            .collect::<Vec<_>>()
+        {
+            if let Some(index) = self.servers.index_for(&path)
+                && !self.servers.is_running(index)
+                && !self.servers.has_failed(index)
+                && self.chats.trusts_server(SERVERS[index].name)
+            {
+                self.start_server(index);
+            }
+        }
+        self.servers.sync(&self.editor.docs);
+    }
+
+    fn on_lsp(&mut self, server: usize, message: serde_json::Value) {
+        match self.servers.on_message(server, message) {
+            LspEvent::None => {}
+            LspEvent::Diagnostics { path, diagnostics } => {
+                self.editor.diagnostics.insert(path, diagnostics);
+                self.needs_draw = true;
+            }
+            LspEvent::NoDefinition => {
+                self.message = Some("No definition found.".to_owned());
+                self.needs_draw = true;
+            }
+            LspEvent::Problem(problem) => {
+                self.message = Some(format!("{}: {problem}", SERVERS[server].name));
+                self.needs_draw = true;
+            }
+            LspEvent::Definition {
+                path,
+                line,
+                character,
+                utf8,
+            } => {
+                self.needs_draw = true;
+                self.message = None;
+                // A slow server can answer long after the question. If the user has moved on,
+                // jumping would take the cursor, or even their keystrokes, somewhere unexpected.
+                if self.definition_asked.take() != self.editor_position() {
+                    return;
+                }
+                let column = |text: &str| lsp::to_byte_column(text, character, utf8);
+                if let Err(err) = self.editor.jump_to(&path, line, column) {
+                    self.message = Some(format!("Can't open {}: {err}", self.display_path(&path)));
+                }
+            }
         }
     }
 
@@ -519,12 +663,25 @@ impl App {
                 let tree = self.files.check_disk();
                 let docs = self.editor.check_disk();
                 self.needs_draw |= tree || docs;
+                self.tend_servers();
                 if self.ticks.is_multiple_of(GIT_CHECK_EVERY) {
                     self.check_git();
                 }
                 self.ticks = self.ticks.wrapping_add(1);
             }
             Event::Git(snapshot) => self.on_git(snapshot),
+            Event::Lsp { server, message } => self.on_lsp(server, message),
+            Event::LspExit { server, reason } => {
+                if self.servers.on_exit(server) {
+                    let why = if reason.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {reason}")
+                    };
+                    self.message = Some(format!("{} stopped{why}", SERVERS[server].name));
+                    self.needs_draw = true;
+                }
+            }
             Event::SearchDone { query, hits, more } => self.on_search_done(query, hits, more),
             Event::PtyOutput { id, bytes } => {
                 self.terminals.on_output(id, &bytes);
@@ -950,6 +1107,8 @@ impl App {
         match cmd {
             EditorCmd::None => {}
             EditorCmd::Message(text) => self.message = Some(text),
+            EditorCmd::Definition => self.go_to_definition(),
+            EditorCmd::NextProblem => self.next_problem(),
             EditorCmd::Copied(text) => self.copy(text),
             EditorCmd::SaveAs => {
                 self.modal = Some(Modal::input(
@@ -1067,6 +1226,22 @@ impl App {
         let text = |err: std::io::Error| err.to_string();
         match then {
             Then::Quit => self.quit(),
+            Then::StartServer(index) => {
+                self.chats
+                    .trust_server(SERVERS[index].name)
+                    .map_err(|err| format!("Couldn't save that choice: {err}"))?;
+                self.start_server(index);
+                match self.pending_retry.take() {
+                    Some(Retry::Definition) => self.go_to_definition(),
+                    Some(Retry::Problems) => {
+                        self.message = Some(format!(
+                            "{} is starting. F8 will list problems once it has found them.",
+                            SERVERS[index].name
+                        ))
+                    }
+                    None => {}
+                }
+            }
             Then::OpenFile => {
                 let path = self.root.join(value);
                 self.files.reveal(&path);
@@ -1820,6 +1995,380 @@ mod tests {
             "marks clear if the repository goes away"
         );
         drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn server_rig(name: &str) -> (App, PathBuf, std::sync::mpsc::Receiver<Event>, PathBuf) {
+        let (mut app, dir) = app_in(name);
+        let (tx, rx) = mpsc::sync_channel(256);
+        app.chats = Chats::with_config(dir.clone(), tx.clone(), dir.join("config.json"));
+        app.servers = Servers::new(dir.clone(), tx);
+        let log = dir.join("server.log");
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/mock_lsp.py");
+        let command = format!("MOCK_LSP_LOG='{}' exec python3 '{script}'", log.display());
+        app.servers.command_override = Some(vec!["sh".to_owned(), "-c".to_owned(), command]);
+        (app, dir, rx, log)
+    }
+
+    /// Handles worker messages until `done` says so.
+    fn pump(app: &mut App, rx: &std::sync::mpsc::Receiver<Event>, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if done(app) {
+                return;
+            }
+            if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                app.handle(event);
+            }
+        }
+        panic!("timed out waiting; message: {:?}", app.message);
+    }
+
+    fn logged_methods(log: &std::path::Path) -> Vec<String> {
+        fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|entry| entry["method"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// A column in a line with a character outside the BMP, where bytes, chars and UTF-16 all differ.
+    const CODE: &str = "fn target() {}\nfn main() { let s = \"😀\"; target(); }\nBAD line\n";
+
+    fn open_code(app: &mut App, dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("code.rs");
+        fs::write(&path, CODE).unwrap();
+        app.open_file(&path);
+        path
+    }
+
+    fn cursor_on_call(app: &mut App) {
+        let line = CODE.lines().nth(1).unwrap();
+        let col = line.find("target();").unwrap();
+        app.editor
+            .doc()
+            .unwrap()
+            .buf
+            .set_cursor(crate::editor::Pos { line: 1, col }, false);
+    }
+
+    #[test]
+    fn language_servers_never_start_until_the_user_says_so_and_it_is_remembered() {
+        let (mut app, dir, rx, log) = server_rig("trust");
+        open_code(&mut app, &dir);
+        for _ in 0..3 {
+            app.handle(Event::Tick);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !log.exists(),
+            "nothing may start just because a file is open"
+        );
+
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        let Some(Modal::Confirm { title, .. }) = &app.modal else {
+            panic!("expected a question")
+        };
+        assert!(
+            title.contains("rust-analyzer") && title.contains("run code"),
+            "{title}"
+        );
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        app.handle(Event::Tick);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!log.exists(), "n means no");
+        assert!(!app.chats.trusts_server("rust-analyzer"));
+
+        press(&mut app, KeyCode::F(8), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(app.servers.is_running(0));
+        assert!(app.chats.trusts_server("rust-analyzer"));
+        assert!(
+            fs::read_to_string(dir.join("config.json"))
+                .unwrap()
+                .contains(dir.to_str().unwrap()),
+            "saved for this project"
+        );
+
+        // Another run in this project starts it without asking; another project still asks.
+        let (tx, _rx2) = mpsc::sync_channel(8);
+        let again = Chats::with_config(dir.clone(), tx.clone(), dir.join("config.json"));
+        assert!(again.trusts_server("rust-analyzer"));
+        let elsewhere = Chats::with_config(
+            PathBuf::from("/some/other/project"),
+            tx,
+            dir.join("config.json"),
+        );
+        assert!(!elsewhere.trusts_server("rust-analyzer"));
+        drop(rx);
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_trusted_server_starts_by_itself_and_reports_problems_and_saves() {
+        let (mut app, dir, rx, log) = server_rig("diagnostics");
+        app.chats.trust_server("rust-analyzer").unwrap();
+        let path = open_code(&mut app, &dir);
+        app.handle(Event::Tick);
+        assert!(app.servers.is_running(0));
+        pump(&mut app, &rx, |app| {
+            app.editor
+                .diagnostics
+                .get(&path)
+                .is_some_and(|list| !list.is_empty())
+        });
+
+        let problems = &app.editor.diagnostics[&path];
+        assert_eq!((problems[0].line, problems[0].severity), (2, 1));
+        assert_eq!(
+            problems[0].message, "mock problem: BAD",
+            "only the first line of a message"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(150, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            text.contains("BAD line   mock problem: BAD"),
+            "shown at the end of the line"
+        );
+
+        press(&mut app, KeyCode::F(8), KeyModifiers::NONE);
+        assert_eq!(
+            app.editor.doc().unwrap().buf.cursor.line,
+            2,
+            "F8 jumps to it"
+        );
+        assert_eq!(app.message.as_deref(), Some("1 problem: mock problem: BAD"));
+
+        // Edits reach the server. Fixing the line clears the problem.
+        let doc = app.editor.doc().unwrap();
+        doc.buf.replace_all("fn target() {}\nfine\n");
+        app.handle(Event::Tick);
+        pump(&mut app, &rx, |app| {
+            app.editor.diagnostics[&path].is_empty()
+        });
+
+        // Saves reach the server, which is when rust-analyzer runs cargo check.
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        app.handle(Event::Tick);
+        pump(&mut app, &rx, |app| {
+            app.editor.diagnostics[&path]
+                .iter()
+                .any(|problem| problem.message == "mock saw the save")
+        });
+
+        // Closing the tab tells the server too, and the server sends the whole file on change.
+        press(&mut app, KeyCode::Char('w'), KeyModifiers::ALT);
+        app.handle(Event::Tick);
+        pump(&mut app, &rx, |_| {
+            logged_methods(&log).contains(&"textDocument/didClose".to_owned())
+        });
+        let methods = logged_methods(&log);
+        assert_eq!(methods[0], "initialize", "the handshake comes first");
+        assert_eq!(methods[1], "initialized");
+        let reply = fs::read_to_string(&log).unwrap();
+        assert!(
+            reply
+                .lines()
+                .any(|line| line.contains("\"id\":900") || line.contains("\"id\": 900")),
+            "the server's own request got an answer"
+        );
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn go_to_definition_converts_columns_and_shift_f12_comes_back() {
+        let (mut app, dir, rx, _log) = server_rig("definition");
+        let path = open_code(&mut app, &dir);
+        cursor_on_call(&mut app);
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        pump(&mut app, &rx, |app| app.editor.docs[0].buf.cursor.line == 0);
+        let cursor = app.editor.docs[0].buf.cursor;
+        assert_eq!(cursor.col, 3, "on the name of `fn target`");
+        assert_eq!(app.message, None);
+
+        press(&mut app, KeyCode::F(12), KeyModifiers::SHIFT);
+        let back = app.editor.docs[0].buf.cursor;
+        assert_eq!(
+            (back.line, back.col),
+            (1, CODE.lines().nth(1).unwrap().find("target();").unwrap()),
+            "back where it started"
+        );
+        press(&mut app, KeyCode::F(12), KeyModifiers::SHIFT);
+        assert_eq!(app.message.as_deref(), Some("Nowhere to go back to."));
+
+        // A word with no definition, and a jump into another file.
+        app.editor
+            .doc()
+            .unwrap()
+            .buf
+            .set_cursor(crate::editor::Pos { line: 2, col: 0 }, false);
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        pump(&mut app, &rx, |app| {
+            app.message.as_deref() == Some("No definition found.")
+        });
+
+        let other = dir.join("other.rs");
+        fs::write(&other, "// a comment first\nfn elsewhere() {}\n").unwrap();
+        app.open_file(&other);
+        app.handle(Event::Tick);
+        app.open_file(&path);
+        let doc = app.editor.doc().unwrap();
+        doc.buf.replace_all("elsewhere();\n");
+        doc.buf
+            .set_cursor(crate::editor::Pos { line: 0, col: 0 }, false);
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        pump(&mut app, &rx, |app| {
+            app.editor.docs[app.editor.active].path.as_deref() == Some(other.as_path())
+        });
+        assert_eq!(app.editor.docs[app.editor.active].buf.cursor.line, 1);
+        press(&mut app, KeyCode::F(12), KeyModifiers::SHIFT);
+        assert_eq!(
+            app.editor.docs[app.editor.active].path.as_deref(),
+            Some(path.as_path()),
+            "back across files"
+        );
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_late_definition_answer_does_not_pull_the_user_away() {
+        let (mut app, dir, rx, _log) = server_rig("late");
+        app.chats.trust_server("rust-analyzer").unwrap();
+        open_code(&mut app, &dir);
+        app.handle(Event::Tick);
+        let asked = |app: &mut App| {
+            cursor_on_call(app);
+            press(app, KeyCode::F(12), KeyModifiers::NONE);
+            assert!(app.message.is_some());
+        };
+
+        // Moved to another pane: keystrokes must stay there.
+        asked(&mut app);
+        press(&mut app, KeyCode::Char('2'), KeyModifiers::ALT);
+        pump(&mut app, &rx, |app| app.message.is_none());
+        assert_eq!(app.focus, Focus::Terminal);
+        assert_eq!(app.editor.docs[0].buf.cursor.line, 1, "no jump");
+        press(&mut app, KeyCode::Char('3'), KeyModifiers::ALT);
+
+        // Moved the cursor.
+        asked(&mut app);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        app.message = Some("waiting".to_owned());
+        pump(&mut app, &rx, |app| app.message.is_none());
+        assert_eq!(app.editor.docs[0].buf.cursor.line, 2, "no jump");
+
+        // Kept typing.
+        asked(&mut app);
+        type_text(&mut app, "x");
+        app.message = Some("waiting".to_owned());
+        pump(&mut app, &rx, |app| app.message.is_none());
+        assert_eq!(app.editor.docs[0].buf.cursor.line, 1, "no jump");
+
+        // Stayed put: it jumps.
+        app.editor.doc().unwrap().buf.undo();
+        asked(&mut app);
+        pump(&mut app, &rx, |app| app.editor.docs[0].buf.cursor.line == 0);
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_server_that_cannot_launch_reports_it_once() {
+        let (mut app, dir, rx, _log) = server_rig("nolaunch");
+        app.servers.command_override = Some(vec!["/nonexistent/server".to_owned()]);
+        app.chats.trust_server("rust-analyzer").unwrap();
+        open_code(&mut app, &dir);
+        app.handle(Event::Tick);
+        assert!(
+            app.message
+                .as_deref()
+                .unwrap()
+                .starts_with("Can't start rust-analyzer")
+        );
+        app.message = None;
+        app.handle(Event::Tick);
+        assert_eq!(app.message, None, "not repeated every second");
+        assert!(app.servers.has_failed(0));
+        drop(rx);
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_server_that_dies_explains_why_and_does_not_restart_in_a_loop() {
+        let (mut app, dir, rx, _log) = server_rig("crash");
+        // Like rustup's placeholder for a component that isn't installed.
+        let command =
+            "echo \"error: Unknown binary 'rust-analyzer' in official toolchain\" >&2; exit 1";
+        app.servers.command_override =
+            Some(vec!["sh".to_owned(), "-c".to_owned(), command.to_owned()]);
+        app.chats.trust_server("rust-analyzer").unwrap();
+        open_code(&mut app, &dir);
+        app.handle(Event::Tick);
+        pump(&mut app, &rx, |app| !app.servers.is_running(0));
+        assert_eq!(
+            app.message.as_deref(),
+            Some(
+                "rust-analyzer stopped: error: Unknown binary 'rust-analyzer' in official toolchain"
+            )
+        );
+
+        app.handle(Event::Tick);
+        assert!(!app.servers.is_running(0), "no restart loop");
+        assert!(app.servers.has_failed(0));
+
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        assert!(app.modal.is_some(), "asking explicitly can try again");
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn language_servers_do_not_get_api_keys_and_die_with_the_app() {
+        let (mut app, dir, rx, log) = server_rig("secrets");
+        // SAFETY: tests only read this variable in child processes.
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "sk-should-not-leak") };
+        app.chats.trust_server("rust-analyzer").unwrap();
+        open_code(&mut app, &dir);
+        app.handle(Event::Tick);
+        pump(&mut app, &rx, |_| {
+            log.exists() && logged_methods(&log).len() >= 2
+        });
+        let first: serde_json::Value =
+            serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
+                .unwrap();
+        assert_eq!(first["secret"], serde_json::Value::Null);
+        let pid = first["pid"].as_i64().unwrap();
+        drop(app);
+        let alive = std::path::Path::new("/proc").join(pid.to_string()).exists();
+        assert!(!alive, "the server must not outlive the app");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_with_no_server_explain_what_to_install() {
+        let (mut app, dir) = app_in("noserver");
+        fs::write(dir.join("notes.txt"), "text").unwrap();
+        app.open_file(&dir.join("notes.txt"));
+        press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("No language server is known for this kind of file.")
+        );
+        assert!(app.modal.is_none());
         fs::remove_dir_all(&dir).unwrap();
     }
 

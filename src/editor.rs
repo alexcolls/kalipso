@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{TabHits, tab_line};
 use crate::git::{Mark, line_marks};
+use crate::lsp::Diagnostic;
 
 const TAB_WIDTH: usize = 4;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -29,7 +30,7 @@ const CHECKPOINT_EVERY: usize = 256;
 const MAX_HIGHLIGHT_LINE: usize = 4096;
 pub const SELECTION_BG: Color = Color::Rgb(60, 70, 95);
 
-const HINTS: &str = "Ctrl+S save  Ctrl+P open  Alt+F search  Ctrl+Z/Y undo  Ctrl+F find  F3 next  Ctrl+G line  Alt+T new  Alt+W close";
+const HINTS: &str = "Ctrl+S save  Ctrl+P open  Alt+F search  F12 definition  Shift+F12 back  F8 problems  Ctrl+Z/Y undo  Ctrl+F find  Ctrl+G line";
 const PROPOSAL_HINTS: &str =
     "Proposed by an agent, read-only.  y allow  n decline  a always  Esc back to chat";
 
@@ -79,6 +80,7 @@ pub struct Buffer {
     /// Stops the next edit merging into the previous undo step.
     sealed: bool,
     changed_from: Option<usize>,
+    revision: u64,
 }
 
 fn end_of(start: Pos, text: &str) -> Pos {
@@ -165,6 +167,7 @@ impl Buffer {
             saved: Some(0),
             sealed: true,
             changed_from: None,
+            revision: 0,
         }
     }
 
@@ -183,6 +186,11 @@ impl Buffer {
     pub fn mark_saved(&mut self) {
         self.saved = Some(self.undo.len());
         self.sealed = true;
+    }
+
+    /// Goes up with every change to the text.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Lowest line changed since the last call.
@@ -228,6 +236,7 @@ impl Buffer {
         new[last].push_str(&tail);
         self.lines.splice(start.line..=end.line, new);
         self.changed_from = Some(self.changed_from.map_or(start.line, |c| c.min(start.line)));
+        self.revision += 1;
         Pos {
             line: start.line + last,
             col,
@@ -1045,6 +1054,8 @@ pub struct Doc {
     marks_stale: bool,
     /// Set when this read-only tab shows an agent's proposed change: which chat and tool call.
     proposal: Option<(u64, String)>,
+    /// How many times this has been saved, so language servers can be told.
+    pub saves: u32,
 }
 
 impl Doc {
@@ -1066,7 +1077,12 @@ impl Doc {
             marks: Vec::new(),
             marks_stale: false,
             proposal: None,
+            saves: 0,
         }
+    }
+
+    pub fn is_proposal(&self) -> bool {
+        self.proposal.is_some()
     }
 
     /// Sets the text the gutter compares against.
@@ -1116,6 +1132,7 @@ impl Doc {
         self.disk = stamp_of(path);
         self.conflict = None;
         self.buf.mark_saved();
+        self.saves += 1;
         Ok(())
     }
 
@@ -1176,6 +1193,8 @@ pub enum EditorCmd {
     GoToLine,
     Copied(String),
     Message(String),
+    Definition,
+    NextProblem,
 }
 
 #[derive(Default)]
@@ -1189,6 +1208,9 @@ pub struct Editor {
     selecting: bool,
     /// The tab to return to when a proposal closes.
     before_proposal: Option<usize>,
+    pub diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
+    /// Where go-to-definition came from, for going back.
+    jumps: Vec<(PathBuf, Pos)>,
 }
 
 impl Editor {
@@ -1386,6 +1408,83 @@ impl Editor {
         }
     }
 
+    /// Moves the cursor after a jump. `column` is whatever the closure makes of this line.
+    pub fn go_to(&mut self, line: usize, column: impl Fn(&str) -> usize) {
+        if let Some(doc) = self.doc() {
+            let line = line.min(doc.buf.lines().len() - 1);
+            let col = column(&doc.buf.lines()[line]);
+            doc.buf.set_cursor(Pos { line, col }, false);
+            doc.follow_cursor = true;
+        }
+    }
+
+    /// Opens a file at a position, remembering where this came from so Shift+F12 can go back.
+    /// If the file can't be opened, nothing moves.
+    pub fn jump_to(
+        &mut self,
+        path: &Path,
+        line: usize,
+        column: impl Fn(&str) -> usize,
+    ) -> Result<(), String> {
+        let from = self
+            .docs
+            .get(self.active)
+            .and_then(|doc| Some((doc.path.clone()?, doc.buf.cursor)));
+        self.open(path)?;
+        self.jumps.extend(from);
+        self.go_to(line, column);
+        Ok(())
+    }
+
+    fn jump_back(&mut self) -> EditorCmd {
+        let Some((path, position)) = self.jumps.pop() else {
+            return EditorCmd::Message("Nowhere to go back to.".to_owned());
+        };
+        if let Err(err) = self.open(&path) {
+            return EditorCmd::Message(format!("Can't go back: {err}"));
+        }
+        if let Some(doc) = self.doc() {
+            doc.buf.set_cursor(position, false);
+            doc.follow_cursor = true;
+        }
+        EditorCmd::None
+    }
+
+    /// Moves to the next problem in this file, wrapping around, and describes it.
+    pub fn next_problem(&mut self) -> String {
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return "No file open.".to_owned();
+        };
+        let problems = doc
+            .path
+            .as_ref()
+            .and_then(|path| self.diagnostics.get(path))
+            .map_or(&[][..], Vec::as_slice);
+        let Some(first) = problems.first() else {
+            return "No problems reported in this file.".to_owned();
+        };
+        let cursor = doc.buf.cursor.line;
+        let target = problems
+            .iter()
+            .find(|problem| problem.line > cursor)
+            .unwrap_or(first);
+        let count = problems.len();
+        let text = format!(
+            "{count} problem{}: {}",
+            if count == 1 { "" } else { "s" },
+            target.message
+        );
+        doc.buf.set_cursor(
+            Pos {
+                line: target.line,
+                col: 0,
+            },
+            false,
+        );
+        doc.follow_cursor = true;
+        text
+    }
+
     pub fn paste(&mut self, text: &str) {
         if let Some(doc) = self.doc().filter(|doc| doc.proposal.is_none()) {
             doc.buf
@@ -1420,6 +1519,11 @@ impl Editor {
             KeyCode::Char('f') if ctrl => return EditorCmd::Find,
             KeyCode::Char('g') if ctrl => return EditorCmd::GoToLine,
             KeyCode::F(3) => return self.find_next(!key.modifiers.contains(KeyModifiers::SHIFT)),
+            KeyCode::F(12) if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                return self.jump_back();
+            }
+            KeyCode::F(12) => return EditorCmd::Definition,
+            KeyCode::F(8) => return EditorCmd::NextProblem,
             KeyCode::Char('r') if ctrl => {
                 let Some(doc) = self.doc() else {
                     return EditorCmd::None;
@@ -1582,10 +1686,26 @@ impl Editor {
                 .get(&index)
                 .map_or(&[][..], Vec::as_slice);
             let mut row = render_line(text, runs, selected, doc.left, width);
-            let number_style = if index == cursor.line {
-                Style::new().fg(Color::Gray)
-            } else {
-                Style::new().fg(Color::DarkGray)
+            let problem = doc
+                .path
+                .as_ref()
+                .and_then(|path| self.diagnostics.get(path))
+                .and_then(|list| list.iter().find(|problem| problem.line == index));
+            let problem_color = problem.map(|problem| match problem.severity {
+                1 => Color::Red,
+                2 => Color::Yellow,
+                _ => Color::Blue,
+            });
+            if let (Some(problem), Some(color)) = (problem, problem_color) {
+                row.spans.push(Span::styled(
+                    format!("   {}", problem.message),
+                    Style::new().fg(color).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            let number_style = match problem_color {
+                Some(color) => Style::new().fg(color),
+                None if index == cursor.line => Style::new().fg(Color::Gray),
+                None => Style::new().fg(Color::DarkGray),
             };
             let (sign, sign_color) = match doc.marks.get(index).copied().unwrap_or_default() {
                 Mark::None => (" ", Color::Reset),
@@ -1911,6 +2031,32 @@ mod tests {
         assert_eq!(editor.docs[0].conflict, Some(Conflict::Deleted));
         assert!(matches!(editor.save(), EditorCmd::None));
         assert!(path.exists(), "saving a deleted file recreates it");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_jump_to_a_file_that_cannot_open_moves_nothing() {
+        let dir = temp_dir("jump");
+        let good = dir.join("good.txt");
+        fs::write(&good, "one\ntwo\n").unwrap();
+        fs::write(dir.join("binary.bin"), b"a\0b").unwrap();
+        let mut editor = Editor::default();
+        editor.open(&good).unwrap();
+        editor.go_to(1, |_| 0);
+
+        assert!(editor.jump_to(&dir.join("binary.bin"), 0, |_| 0).is_err());
+        assert_eq!(editor.docs.len(), 1);
+        assert_eq!(editor.docs[0].buf.cursor.line, 1, "the cursor stays put");
+        assert!(
+            matches!(editor.jump_back(), EditorCmd::Message(_)),
+            "and it isn't a place to go back to"
+        );
+
+        // Past the end of the file stops at the last line rather than panicking.
+        editor.jump_to(&good, 99, |_| 0).unwrap();
+        assert_eq!(editor.docs[0].buf.cursor.line, 2);
+        assert!(matches!(editor.jump_back(), EditorCmd::None));
+        assert_eq!(editor.docs[0].buf.cursor.line, 1);
         fs::remove_dir_all(&dir).unwrap();
     }
 
