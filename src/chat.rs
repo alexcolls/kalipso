@@ -305,6 +305,8 @@ pub struct Chat {
     entries: Vec<Entry>,
     pub input: Buffer,
     scroll_up: usize,
+    /// Transcript height at the last draw, to keep a scrolled-up view still as text arrives.
+    last_total: usize,
     state: State,
     generation: u64,
     cancel: Arc<AtomicBool>,
@@ -701,6 +703,7 @@ impl Chats {
             entries: Vec::new(),
             input: Buffer::from_text(""),
             scroll_up: 0,
+            last_total: 0,
             state: State::Idle,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -919,6 +922,11 @@ impl Chats {
             }
         }
         let total: usize = chat.entries.iter().map(|entry| entry.cache.as_ref().map_or(0, |(_, lines)| lines.len() + 1)).sum();
+        // Scrolling counts up from the bottom, so new text would otherwise push the view along.
+        if chat.scroll_up > 0 {
+            chat.scroll_up += total.saturating_sub(chat.last_total);
+        }
+        chat.last_total = total;
         chat.scroll_up = chat.scroll_up.min(total.saturating_sub(height));
         let first = total.saturating_sub(height + chat.scroll_up);
         let lines: Vec<Line> = chat
@@ -1435,6 +1443,34 @@ mod tests {
         rig.chats.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), "");
         rig.settle();
         assert_eq!(rig.request_count(), 1);
+        rig.cleanup();
+    }
+
+    #[test]
+    fn a_scrolled_up_view_stays_put_while_new_text_arrives() {
+        let mut rig = rig("scroll", "Code", Provider::Claude, Vec::new());
+        for number in 0..60 {
+            rig.chats.tabs[0].push(Kind::Notice, format!("row {number}"));
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        let mut top_row = |chats: &mut Chats| {
+            terminal.draw(|frame| chats.draw(frame, frame.area(), true)).unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..40).map(|x| buffer[(x, 2)].symbol().to_owned()).collect::<String>()
+        };
+        top_row(&mut rig.chats);
+        rig.chats.tabs[0].scroll(20);
+        let before = top_row(&mut rig.chats);
+        rig.chats.tabs[0].push(Kind::Notice, "new text arrives");
+        rig.chats.tabs[0].append(Kind::Notice, " and keeps growing");
+        assert_eq!(top_row(&mut rig.chats), before, "the view must not move");
+
+        rig.chats.tabs[0].scroll_up = 0;
+        top_row(&mut rig.chats);
+        rig.chats.tabs[0].push(Kind::Notice, "more");
+        let following = top_row(&mut rig.chats);
+        assert_ne!(following, before, "at the bottom, the view follows new text");
+        assert_eq!(rig.chats.tabs[0].scroll_up, 0);
         rig.cleanup();
     }
 
