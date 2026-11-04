@@ -36,13 +36,13 @@ gone() {
     done
     fail "$name (still showing: $text)"
 }
-saved() {
-    local name=$1 text=$2 i
+file_has() {
+    local name=$1 file=$2 text=$3 i
     for i in $(seq 50); do
-        grep -qF -- "$text" "$CONFIG/kalipso/config.json" 2>/dev/null && { pass "$name"; return; }
+        grep -qF -- "$text" "$file" 2>/dev/null && { pass "$name"; return; }
         sleep 0.1
     done
-    fail "$name (not in config.json: $text)"
+    fail "$name (not in $file: $text)"
 }
 # Column and row of some text on screen, counting from 1. Python, because mawk's index()
 # counts bytes and the borders are multi-byte.
@@ -159,7 +159,7 @@ expect "tab marks unsaved changes" "hello.rs ●"
 key C-z; gone "undo removes the edit" 'XYZfn'
 key -l 'ABC'; key C-s
 gone "save clears the unsaved mark" "hello.rs ●"
-if head -c 12 "$WORK/hello.rs" | grep -qF 'ABCfn main'; then pass "save writes to disk"; else fail "save writes to disk"; fi
+file_has "save writes to disk" "$WORK/hello.rs" 'ABCfn main'
 expect "the tree marks a file git sees as changed" "hello.rs M"
 expect "the gutter marks a changed line" "▎ABCfn main"
 
@@ -189,6 +189,7 @@ if [ -f "$WORK/made/by/test.txt" ]; then pass "new file created with parents"; e
 expect "tree reveals the new file" "test.txt"
 key M-1; key d; expect "delete asks first" "Delete made/by/test.txt?"
 key y; gone "tree drops deleted file" "test.txt ●"
+for i in $(seq 50); do [ -e "$WORK/made/by/test.txt" ] || break; sleep 0.1; done
 if [ -e "$WORK/made/by/test.txt" ]; then fail "delete removes the file"; else pass "delete removes the file"; fi
 
 key C-p; expect "Ctrl+P opens the file picker" "Open file"
@@ -217,8 +218,8 @@ cursor_on "F12 finds the definition from past an emoji, and lands on its name" "
 expect "problems appear next to their line" "BAD line   mock problem: BAD"
 key S-F12; cursor_on "Shift+F12 comes back to the call" "target();" 1
 key F8; expect "F8 jumps to a problem and describes it" "1 problem: mock problem: BAD"
-saved "the answer is saved for this project" "$(cd "$WORK" && pwd -P)"
-saved "the answer names the server" '"rust-analyzer"'
+file_has "the answer is saved for this project" "$CONFIG/kalipso/config.json" "$(cd "$WORK" && pwd -P)"
+file_has "the answer names the server" "$CONFIG/kalipso/config.json" '"rust-analyzer"'
 
 key M-f; expect "Alt+F asks what to search for" "Search project"
 key -l 'needle_in'; key Enter
@@ -340,7 +341,7 @@ key -l '/model'; key Enter
 expect "/model lists the provider's models" "Claude model"
 key -l 'sonnet'; key Enter
 expect "/model switches the model" "claude-sonnet-mock"
-saved "the model choice is saved" 'claude-sonnet-mock'
+file_has "the model choice is saved" "$CONFIG/kalipso/config.json" 'claude-sonnet-mock'
 key -l 'hello there'; key Enter
 expect "a second message gets a reply" "Hello from the mock."
 
