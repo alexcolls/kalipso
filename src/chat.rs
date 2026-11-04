@@ -26,7 +26,7 @@ use crate::llm::{self, ClaudeFeatures, DEFAULT_CLAUDE_MODEL, Delta, ModelInfo, P
 use crate::tools::{self, Gate, READ_TOOLS, ToolOutput};
 
 pub const HINTS: &str = "Enter send  Ctrl+J newline  Esc stop  PgUp/PgDn scroll  drag copies  /model /compact /copy  Alt+T new chat";
-const APPROVE_HINTS: &str = "y allow  n decline  a always in this tab  Esc stop the agent  PgUp/PgDn scroll";
+const APPROVE_HINTS: &str = "y allow  n decline  a always in this tab  v view in editor  Esc stop the agent  PgUp/PgDn scroll";
 
 /// Model turns allowed for one user message, to limit runaway cost.
 const MAX_TURNS: usize = 50;
@@ -716,6 +716,18 @@ impl Chat {
         self.push(Kind::Notice, "Stopped.");
     }
 
+    fn view_proposal(&self, root: &Path) -> ChatCmd {
+        let State::Approving(call) = &self.state else { return ChatCmd::None };
+        let Ok(input) = &call.input else { return ChatCmd::None };
+        if !matches!(call.name.as_str(), "write_file" | "edit_file") {
+            return ChatCmd::Message("Only file changes can be opened in the editor.".to_owned());
+        }
+        match tools::proposal(&call.name, input, root) {
+            Ok((path, current, proposed)) => ChatCmd::ViewProposal { chat: self.id, call: call.id.clone(), path, current, proposed },
+            Err(err) => ChatCmd::Message(err),
+        }
+    }
+
     fn scroll(&mut self, delta: isize) {
         self.scroll_up = (self.scroll_up as isize + delta).max(0) as usize;
     }
@@ -762,6 +774,7 @@ pub enum ChatCmd {
     Copied(String),
     CopiedReply(String),
     Message(String),
+    ViewProposal { chat: u64, call: String, path: PathBuf, current: String, proposed: String },
 }
 
 /// What the user has open in the editor, sent along with a message.
@@ -907,6 +920,22 @@ impl Chats {
         self.tabs.iter().any(Chat::is_busy)
     }
 
+    /// The tool call a chat is waiting for an answer on.
+    pub fn approving_call(&self, chat: u64) -> Option<&str> {
+        match &self.tabs.iter().find(|tab| tab.id == chat)?.state {
+            State::Approving(call) => Some(&call.id),
+            _ => None,
+        }
+    }
+
+    /// Answers a chat's approval question from outside the chat pane.
+    pub fn answer(&mut self, chat: u64, answer: char) {
+        let ctx = Context { root: &self.root, tx: &self.tx, models: &self.models, endpoint_override: self.endpoint_override.as_ref() };
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == chat) {
+            tab.answer(answer, &ctx);
+        }
+    }
+
     pub fn any_approving(&self) -> bool {
         self.tabs.iter().any(Chat::is_approving)
     }
@@ -983,6 +1012,8 @@ impl Chats {
                 && matches!(c.to_ascii_lowercase(), 'y' | 'n' | 'a')
             {
                 chat.answer(c.to_ascii_lowercase(), &ctx);
+            } else if key.code == KeyCode::Char('v') {
+                return chat.view_proposal(&self.root);
             }
             return ChatCmd::None;
         }
@@ -1126,9 +1157,9 @@ impl Chats {
             // Long previews end at the bottom of the view, so say when the start is off-screen.
             let preview_rows = chat.entries.last().and_then(|entry| entry.cache.as_ref()).map_or(0, |(_, lines)| lines.len());
             let text = if preview_rows >= height && chat.scroll_up == 0 {
-                "Allow this? PgUp to read all of it first.  y yes   n no   a always"
+                "Allow this? PgUp or v to read it all first.  y yes   n no   a always"
             } else {
-                "Allow this?  y yes   n no   a always in this tab"
+                "Allow this?  y yes   n no   a always   v view in editor"
             };
             frame.render_widget(Paragraph::new(text).style(Style::new().fg(Color::Black).bg(Color::Yellow)), input_area);
             return;
@@ -1931,9 +1962,9 @@ mod tests {
             terminal.draw(|frame| chats.draw(frame, frame.area(), true)).unwrap();
             terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect::<String>()
         };
-        assert!(screen(&mut terminal, &mut rig.chats).contains("PgUp to read all"));
+        assert!(screen(&mut terminal, &mut rig.chats).contains("PgUp or v to read it all"));
         rig.press(KeyCode::PageUp);
-        assert!(!screen(&mut terminal, &mut rig.chats).contains("PgUp to read all"));
+        assert!(!screen(&mut terminal, &mut rig.chats).contains("PgUp or v to read it all"));
         rig.cleanup();
     }
 

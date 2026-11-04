@@ -301,16 +301,27 @@ fn apply_edit(text: &str, input: &Value) -> Result<String, String> {
     }
 }
 
+/// A file change's current and proposed contents.
+fn contents_of_change(name: &str, input: &Value, path: &Path) -> Result<(String, String), String> {
+    if name == "write_file" {
+        let old = if path.exists() { load_text(path).map(|(text, _)| text).unwrap_or_default() } else { String::new() };
+        return Ok((old, text_field(input, "contents").to_owned()));
+    }
+    let (old, _) = load_text(path).map_err(|err| format!("{}: {err}", text_field(input, "path")))?;
+    let new = apply_edit(&old, input)?;
+    Ok((old, new))
+}
+
+/// Where a file change would land, with the file's current and proposed contents.
+pub fn proposal(name: &str, input: &Value, root: &Path) -> Result<(PathBuf, String, String), String> {
+    let path = resolve(root, text_field(input, "path"))?;
+    let (old, new) = contents_of_change(name, input, &path)?;
+    Ok((path, old, new))
+}
+
 fn change_preview(name: &str, input: &Value, path: &Path) -> Result<String, String> {
     let shown = text_field(input, "path");
-    let (old, new) = if name == "write_file" {
-        let old = if path.exists() { load_text(path).map(|(text, _)| text).unwrap_or_default() } else { String::new() };
-        (old, text_field(input, "contents").to_owned())
-    } else {
-        let (old, _) = load_text(path).map_err(|err| format!("{shown}: {err}"))?;
-        let new = apply_edit(&old, input)?;
-        (old, new)
-    };
+    let (old, new) = contents_of_change(name, input, path)?;
     let verb = if path.exists() { "Change" } else { "Create" };
     Ok(format!("{verb} {shown}\n{}", diff_preview(&old, &new)))
 }

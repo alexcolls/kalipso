@@ -29,7 +29,8 @@ const CHECKPOINT_EVERY: usize = 256;
 const MAX_HIGHLIGHT_LINE: usize = 4096;
 pub const SELECTION_BG: Color = Color::Rgb(60, 70, 95);
 
-pub const HINTS: &str = "Ctrl+S save  Ctrl+P open  Alt+F search  Ctrl+Z/Y undo  Ctrl+F find  F3 next  Ctrl+G line  Alt+T new  Alt+W close";
+const HINTS: &str = "Ctrl+S save  Ctrl+P open  Alt+F search  Ctrl+Z/Y undo  Ctrl+F find  F3 next  Ctrl+G line  Alt+T new  Alt+W close";
+const PROPOSAL_HINTS: &str = "Proposed by an agent, read-only.  y allow  n decline  a always  Esc back to chat";
 
 /// A position in a buffer. `col` is a byte offset, always on a char boundary.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -835,6 +836,8 @@ pub struct Doc {
     base_head: Option<String>,
     marks: Vec<Mark>,
     marks_stale: bool,
+    /// Set when this read-only tab shows an agent's proposed change: which chat and tool call.
+    proposal: Option<(u64, String)>,
 }
 
 impl Doc {
@@ -855,6 +858,7 @@ impl Doc {
             base_head: None,
             marks: Vec::new(),
             marks_stale: false,
+            proposal: None,
         }
     }
 
@@ -870,7 +874,9 @@ impl Doc {
 
     pub fn title(&self) -> String {
         let name = self.path.as_deref().and_then(Path::file_name).map_or("untitled".into(), |n| n.to_string_lossy());
-        if self.buf.is_dirty() { format!("{name} ●") } else { name.into_owned() }
+        if self.proposal.is_some() {
+            format!("{name} (proposed)")
+        } else if self.buf.is_dirty() { format!("{name} ●") } else { name.into_owned() }
     }
 
     pub fn save_to(&mut self, path: &Path) -> io::Result<()> {
@@ -903,6 +909,10 @@ impl Doc {
 
     /// Reacts to changes made outside this buffer. Returns whether anything changed.
     fn check_disk(&mut self) -> bool {
+        // A proposal differs from the file on purpose.
+        if self.proposal.is_some() {
+            return false;
+        }
         let Some(path) = self.path.clone() else { return false };
         let now = stamp_of(&path);
         if now == self.disk {
@@ -947,6 +957,8 @@ pub struct Editor {
     gutter: u16,
     tabs: TabHits,
     selecting: bool,
+    /// The tab to return to when a proposal closes.
+    before_proposal: Option<usize>,
 }
 
 impl Editor {
@@ -960,7 +972,7 @@ impl Editor {
 
     /// Opens a file, or switches to it if it is already open.
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
-        if let Some(i) = self.docs.iter().position(|doc| doc.path.as_deref() == Some(path)) {
+        if let Some(i) = self.docs.iter().position(|doc| doc.proposal.is_none() && doc.path.as_deref() == Some(path)) {
             self.active = i;
             return Ok(());
         }
@@ -968,6 +980,46 @@ impl Editor {
         self.docs.push(Doc::new(Some(path.to_path_buf()), &text, crlf));
         self.active = self.docs.len() - 1;
         Ok(())
+    }
+
+    /// Shows an agent's proposed change in a read-only tab, marked against the current file.
+    pub fn open_proposal(&mut self, chat: u64, call: String, path: &Path, current: &str, proposed: &str) {
+        let id = (chat, call);
+        if let Some(index) = self.docs.iter().position(|doc| doc.proposal.as_ref() == Some(&id)) {
+            self.active = index;
+            return;
+        }
+        let mut doc = Doc::new(Some(path.to_path_buf()), proposed, false);
+        doc.set_base(Some(current), None);
+        doc.proposal = Some(id);
+        self.before_proposal.get_or_insert(self.active);
+        self.docs.push(doc);
+        self.active = self.docs.len() - 1;
+    }
+
+    /// The chat waiting on the proposal in the active tab, if it shows one.
+    pub fn active_proposal(&self) -> Option<u64> {
+        self.docs.get(self.active)?.proposal.as_ref().map(|(chat, _)| *chat)
+    }
+
+    /// Closes proposal tabs for questions that have been answered.
+    pub fn retain_proposals(&mut self, still_open: impl Fn(u64, &str) -> bool) {
+        let count = self.docs.len();
+        self.docs.retain(|doc| doc.proposal.as_ref().is_none_or(|(chat, call)| still_open(*chat, call)));
+        if self.docs.len() == count {
+            return;
+        }
+        // Proposals open after every real tab, so its index is still right.
+        if !self.docs.iter().any(|doc| doc.proposal.is_some())
+            && let Some(previous) = self.before_proposal.take()
+        {
+            self.active = previous;
+        }
+        self.active = self.active.min(self.docs.len().saturating_sub(1));
+    }
+
+    pub fn hints(&self) -> &'static str {
+        if self.active_proposal().is_some() { PROPOSAL_HINTS } else { HINTS }
     }
 
     pub fn new_untitled(&mut self) {
@@ -999,12 +1051,12 @@ impl Editor {
 
     /// Each open file with the HEAD its gutter is based on.
     pub fn known_bases(&self) -> Vec<(PathBuf, Option<String>)> {
-        self.docs.iter().filter_map(|doc| Some((doc.path.clone()?, doc.base_head.clone()))).collect()
+        self.docs.iter().filter(|doc| doc.proposal.is_none()).filter_map(|doc| Some((doc.path.clone()?, doc.base_head.clone()))).collect()
     }
 
     pub fn apply_bases(&mut self, head: &Option<String>, bases: &[(PathBuf, Option<String>)]) {
         for (path, text) in bases {
-            for doc in self.docs.iter_mut().filter(|doc| doc.path.as_ref() == Some(path)) {
+            for doc in self.docs.iter_mut().filter(|doc| doc.proposal.is_none() && doc.path.as_ref() == Some(path)) {
                 doc.set_base(text.as_deref(), head.clone());
             }
         }
@@ -1057,7 +1109,7 @@ impl Editor {
     }
 
     pub fn paste(&mut self, text: &str) {
-        if let Some(doc) = self.doc() {
+        if let Some(doc) = self.doc().filter(|doc| doc.proposal.is_none()) {
             doc.buf.insert(&text.replace("\r\n", "\n").replace('\r', "\n"));
             doc.follow_cursor = true;
         }
@@ -1066,6 +1118,17 @@ impl Editor {
     pub fn on_key(&mut self, key: KeyEvent, clipboard: &str) -> EditorCmd {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let page = self.view.height as usize;
+        if self.active_proposal().is_some() {
+            let moves = matches!(
+                key.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+            );
+            let copies = ctrl && matches!(key.code, KeyCode::Char('c' | 'a'));
+            let finds = (ctrl && key.code == KeyCode::Char('f')) || key.code == KeyCode::F(3);
+            if !moves && !copies && !finds {
+                return EditorCmd::None;
+            }
+        }
         match key.code {
             KeyCode::Char('s') if ctrl => return self.save(),
             KeyCode::Char('f') if ctrl => return EditorCmd::Find,
@@ -1475,6 +1538,37 @@ mod tests {
         assert_eq!(editor.docs[0].conflict, Some(Conflict::Deleted));
         assert!(matches!(editor.save(), EditorCmd::None));
         assert!(path.exists(), "saving a deleted file recreates it");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn closing_a_proposal_returns_to_the_tab_you_were_on() {
+        let dir = temp_dir("proposal-tab");
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(dir.join(name), name).unwrap();
+        }
+        let mut editor = Editor::default();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            editor.open(&dir.join(name)).unwrap();
+        }
+        editor.open(&dir.join("a.txt")).unwrap();
+        assert_eq!(editor.active, 0);
+
+        editor.open_proposal(1, "t1".to_owned(), &dir.join("b.txt"), "b.txt", "proposed");
+        assert_eq!(editor.active, 3);
+        assert!(editor.active_proposal().is_some());
+        editor.open(&dir.join("b.txt")).unwrap();
+        assert_eq!(editor.active, 1, "opening the real file finds the real tab, not the proposal");
+        editor.open_proposal(1, "t1".to_owned(), &dir.join("b.txt"), "b.txt", "proposed");
+        assert_eq!(editor.active, 3, "the same proposal isn't opened twice");
+        assert_eq!(editor.docs.len(), 4);
+        assert_eq!(editor.known_bases().len(), 3, "proposals have no git base of their own");
+
+        editor.retain_proposals(|_, _| true);
+        assert_eq!(editor.active, 3, "nothing closed, nothing moves");
+        editor.retain_proposals(|_, _| false);
+        assert_eq!(editor.docs.len(), 3);
+        assert_eq!(editor.active, 0, "back to a.txt, not the last tab");
         fs::remove_dir_all(&dir).unwrap();
     }
 

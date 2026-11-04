@@ -447,6 +447,8 @@ impl App {
             }
             Event::Models { provider, purpose, result } => self.on_models(provider, purpose, result),
         }
+        let chats = &self.chats;
+        self.editor.retain_proposals(|chat, call| chats.approving_call(chat) == Some(call));
     }
 
     fn set_focus(&mut self, pane: Focus) {
@@ -469,8 +471,10 @@ impl App {
                     self.run_files_cmd(cmd);
                 }
                 Focus::Editor => {
-                    let cmd = self.editor.on_key(key, &self.clipboard);
-                    self.run_editor_cmd(cmd);
+                    if !self.answer_proposal(key) {
+                        let cmd = self.editor.on_key(key, &self.clipboard);
+                        self.run_editor_cmd(cmd);
+                    }
                 }
                 Focus::Terminal => self.terminals.on_key(key),
                 Focus::Chat => {
@@ -481,6 +485,26 @@ impl App {
                 }
             }
         }
+    }
+
+    /// In a proposal tab, y, n and a answer the agent's question and Esc goes back to the chat.
+    fn answer_proposal(&mut self, key: KeyEvent) -> bool {
+        let Some(chat) = self.editor.active_proposal() else { return false };
+        if key.code == KeyCode::Esc {
+            self.set_focus(Focus::Chat);
+            return true;
+        }
+        if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+            return false;
+        }
+        let KeyCode::Char(c) = key.code else { return false };
+        let answer = c.to_ascii_lowercase();
+        if !matches!(answer, 'y' | 'n' | 'a') {
+            return false;
+        }
+        self.chats.answer(chat, answer);
+        self.set_focus(Focus::Chat);
+        true
     }
 
     /// What's open in the editor, so "this file" means something to an agent. Selected text
@@ -534,6 +558,10 @@ impl App {
                 self.message = Some("Copied the last reply.".to_owned());
             }
             ChatCmd::Message(text) => self.message = Some(text),
+            ChatCmd::ViewProposal { chat, call, path, current, proposed } => {
+                self.editor.open_proposal(chat, call, &path, &current, &proposed);
+                self.set_focus(Focus::Editor);
+            }
             ChatCmd::PickModel(chat, provider) => {
                 self.message = Some(format!("Loading {} models...", provider.name()));
                 self.chats.load_models(provider, ModelsFor::Switch(chat));
@@ -1065,13 +1093,14 @@ impl App {
     fn status_line(&self) -> Line<'static> {
         let (text, style) = match &self.message {
             Some(message) => (message.clone(), Style::new().fg(Color::Yellow)),
-            None if self.focus != Focus::Chat && self.chats.any_approving() => {
+            // Not while reviewing a proposal, whose hints already say how to answer.
+            None if self.focus != Focus::Chat && self.chats.any_approving() && !(self.focus == Focus::Editor && self.editor.active_proposal().is_some()) => {
                 ("An agent is waiting for your approval. Alt+4 to answer.".to_owned(), Style::new().fg(Color::Black).bg(Color::Yellow))
             }
             None => {
                 let hints = match self.focus {
                     Focus::Files => files::HINTS,
-                    Focus::Editor => editor::HINTS,
+                    Focus::Editor => self.editor.hints(),
                     Focus::Terminal => self.terminals.hints(),
                     Focus::Chat => self.chats.hints(),
                 };
@@ -1410,6 +1439,93 @@ mod tests {
         let text: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
         assert!(!text.contains("a.txt M"), "marks clear if the repository goes away");
         drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reviewing in the editor uses the real agent loop against a local server.
+    #[test]
+    fn a_proposed_change_can_be_reviewed_and_answered_in_the_editor() {
+        use crate::llm::testing::{mock, sse};
+        use serde_json::json;
+        let turn = |events: Vec<serde_json::Value>| {
+            let mut all = vec![json!({"type": "message_start", "message": {"usage": {"input_tokens": 1, "output_tokens": 1}}})];
+            all.extend(events);
+            all.push(json!({"type": "message_stop"}));
+            sse(&all)
+        };
+        let tool = |id: &str, contents: &str| {
+            turn(vec![
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": id, "name": "write_file", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": json!({"path": "f.txt", "contents": contents}).to_string()}}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+            ])
+        };
+        let done = turn(vec![json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}})]);
+        let server = mock(vec![(200, tool("t1", "one\nCHANGED\n")), (200, tool("t2", "second try\n")), (200, done)]);
+
+        let (mut app, dir) = app_in("proposal");
+        let (tx, rx) = mpsc::sync_channel(64);
+        fs::write(dir.join("f.txt"), "one\ntwo\n").unwrap();
+        app.chats = Chats::with_config(dir.clone(), tx, dir.join("config.json"));
+        app.chats.endpoint_override = Some((server.url.clone(), "k".to_owned()));
+        app.chats.create(0, Provider::Claude, "m".to_owned());
+        let settle = |app: &mut App| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if !app.chats.tabs[0].is_busy() || app.chats.tabs[0].is_approving() {
+                    return;
+                }
+                if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    app.handle(event);
+                }
+            }
+            panic!("never settled");
+        };
+
+        press(&mut app, KeyCode::Char('4'), KeyModifiers::ALT);
+        type_text(&mut app, "change it");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        settle(&mut app);
+        press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Editor);
+        assert_eq!(app.editor.docs[0].title(), "f.txt (proposed)");
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("2▎CHANGED"), "the proposed line is marked");
+        assert!(text.contains("Proposed by an agent"), "the status line explains");
+
+        // Read-only, and the tab can't touch the real file.
+        type_text(&mut app, "x");
+        app.handle(Event::Input(TermEvent::Paste("pasted".to_owned())));
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(app.editor.docs[0].buf.text(), "one\nCHANGED\n");
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\ntwo\n", "nothing written yet");
+        app.handle(Event::Tick);
+        assert_eq!(app.editor.docs[0].buf.text(), "one\nCHANGED\n", "not reloaded from disk");
+
+        // Esc looks away without answering, and v comes back to the same tab.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Chat);
+        assert!(app.chats.tabs[0].is_approving());
+        press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_eq!(app.editor.docs.len(), 1);
+
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Chat, "answering returns to the chat");
+        settle(&mut app);
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\nCHANGED\n");
+
+        // The next question is a new one, so the old proposal is gone.
+        assert!(app.chats.tabs[0].is_approving());
+        assert!(app.editor.docs.is_empty(), "the answered proposal closed");
+        press(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_eq!(app.editor.docs[0].buf.text(), "second try\n");
+        press(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        settle(&mut app);
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\nCHANGED\n", "declined in the editor");
+        assert!(app.editor.docs.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
