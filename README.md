@@ -195,8 +195,8 @@ cargo test              # unit and integration tests, offline
 tests/e2e.sh            # drives the real binary in an isolated tmux, against tests/mock_llm.py and tests/mock_lsp.py
 ```
 
-Both run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0` publishes a
-Linux x86_64 build as a GitHub release.
+Both run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0` publishes
+Linux x86_64 and Apple silicon builds as a GitHub release.
 
 Live tests are skipped by default. Some need no key; the rest make real, billed API calls:
 

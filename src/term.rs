@@ -609,7 +609,7 @@ mod tests {
         let pair = native_pty_system().openpty(PtySize::default()).unwrap();
         let child = pair
             .slave
-            .spawn_command(CommandBuilder::new("/bin/true"))
+            .spawn_command(CommandBuilder::new("true"))
             .unwrap();
         Term {
             id: 1,
