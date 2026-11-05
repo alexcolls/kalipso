@@ -8,7 +8,6 @@ trap 'rm -rf "$root"' EXIT
 stubs=$root/stubs
 fixtures=$root/fixtures
 mkdir "$stubs" "$fixtures" "$root/cargo-new" "$root/cargo-old" "$root/wsl"
-release=kalipso-v9.9.9-x86_64-linux
 
 stub() { # path, body
     printf '#!/bin/sh\n%s\n' "$2" >"$1"
@@ -17,6 +16,8 @@ stub() { # path, body
 
 stub "$stubs/uname" 'case $1 in -s) echo "$FAKE_OS" ;; -m) echo "$FAKE_ARCH" ;; esac'
 stub "$stubs/cc" ':'
+stub "$stubs/sha256sum" '[ "$FAKE_OS" != Darwin ] || exit 127 # Macs have shasum instead.
+exec /usr/bin/sha256sum "$@"'
 stub "$stubs/xcode-select" '[ -z "${NO_XCODE:-}" ]'
 stub "$root/wsl/wsl.exe" 'echo "$*" >"$FIXTURES/wsl-args"'
 stub "$stubs/curl" 'while [ $# -gt 0 ]; do
@@ -40,7 +41,8 @@ cp "$FIXTURES/cargo" "$CARGO_HOME/bin/cargo"'
 cp "$root/cargo-new/cargo" "$fixtures/cargo"
 
 usage='echo "usage: kalipso [directory]" >&2; exit 2'
-make_release() { # body of the packaged binary
+make_release() { # body of the packaged binary, platform
+    release=kalipso-v9.9.9-${2:-x86_64-linux}
     rm -rf "${fixtures:?}/$release"
     mkdir "$fixtures/$release"
     stub "$fixtures/$release/kalipso" "$1"
@@ -110,8 +112,15 @@ make_release "$usage"
 
 new_home
 extra_path=$root/cargo-new: os=Darwin arch=arm64 shell=/bin/bash run
-check "builds on macOS" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso"'
+check "builds on Apple silicon when the release has no Mac build" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso"'
 check "uses .bash_profile on macOS" 'grep -q "\.local/bin" "$home/.bash_profile"'
+make_release "$usage" aarch64-macos
+new_home
+os=Darwin arch=arm64 run
+check "downloads the Mac build on Apple silicon" '[ -x "$home/.local/bin/kalipso" ] && ! grep -q built "$home/.local/bin/kalipso"'
+new_home
+extra_path=$root/cargo-new: os=Darwin arch=x86_64 run
+check "builds on Intel Macs" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso"'
 new_home
 check "asks for Apple's tools on macOS" '! os=Darwin no_xcode=1 run && grep -q "xcode-select --install" "$root/out"'
 

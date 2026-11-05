@@ -23,12 +23,14 @@ install_in_wsl() {
 }
 
 # Leaves the path of a verified binary that runs here in $bin, or $bin empty if there isn't one.
-download_release() {
-    name=kalipso-$tag-x86_64-linux
+download_release() { # platform, as the release names it
+    name=kalipso-$tag-$1
     url=https://github.com/$repo/releases/download/$tag/$name.tar.gz
-    curl -fsSL "$url" -o "$tmp/$name.tar.gz"
+    # Macs get theirs after Linux, and older releases have none, so this may not exist.
+    curl -fsL "$url" -o "$tmp/$name.tar.gz" || return 0
     curl -fsSL "$url.sha256" -o "$tmp/$name.tar.gz.sha256"
-    (cd "$tmp" && sha256sum -c "$name.tar.gz.sha256" >/dev/null) || die "checksum mismatch for $name.tar.gz"
+    if [ "$os" = Darwin ]; then sha="shasum -a 256"; else sha=sha256sum; fi
+    (cd "$tmp" && $sha -c "$name.tar.gz.sha256" >/dev/null) || die "checksum mismatch for $name.tar.gz"
     tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
 
     # Its usage error first means it started cleanly. musl can't load it, and glibc older than
@@ -98,10 +100,10 @@ main() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     bin=
-    # Releases only publish Linux x86_64 so far.
-    if [ "$os-$(uname -m)" = Linux-x86_64 ]; then
-        download_release
-    fi
+    case $os-$(uname -m) in
+    Linux-x86_64) download_release x86_64-linux ;;
+    Darwin-arm64) download_release aarch64-macos ;;
+    esac
     if [ -z "$bin" ]; then
         build_from_source
     fi
