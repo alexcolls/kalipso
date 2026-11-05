@@ -32,12 +32,20 @@ To install by hand, download a build from
 [Releases](https://github.com/alexcolls/kalipso/releases), unpack it, and put `kalipso` on your
 `PATH`.
 
+To remove it, delete `~/.local/bin/kalipso` and the `PATH` line the installer added to your shell
+config. Settings and saved chats are in `~/.config/kalipso` and `~/.local/share/kalipso`.
+
 ## Run it
 
 ```sh
 kalipso path/to/project                  # defaults to the current folder
 cargo run --release -- path/to/project   # or from source
 ```
+
+**Ctrl+Q** quits. If you have unsaved changes or a running agent, it asks first: `y` quits, Esc stays.
+
+To chat with an agent, set a key from [AI providers](#ai-providers) before you start Kalipso. Then
+press Alt+4 and Enter, and pick an agent.
 
 Linux is the tested platform. macOS passes the test suite, but hasn't been tried by hand.
 
@@ -65,27 +73,34 @@ runs across all panes.
 except the terminal pane, where those keys belong to the shell. Search skips gitignored and private
 files.
 
-**Files:** Enter opens, ←/→ fold, `n` new file, `N` new folder, `r` rename, `d` delete,
+**Files:** Enter opens, ←/→ fold, `n` new file, `N` new folder, `r` rename, `d` or Delete deletes,
 `.` show hidden and ignored files, `R` refresh. In a git repository, `M` marks changed files, `A` new
 ones, and `•` folders with changes inside.
 
 **Editor:** VS Code-style. Ctrl+S save, Ctrl+Z/Y undo/redo, Ctrl+C/X/V clipboard, Ctrl+A select
-all, Ctrl+F find, F3 next match, Ctrl+G go to line, Ctrl+R reload from disk, Shift+motion selects.
-Ctrl+V pastes what you copied in Kalipso; use your terminal's paste (usually Ctrl+Shift+V) for
-text from other programs. The gutter marks lines that differ from git's HEAD: green added, yellow
-changed, red for deleted lines.
+all, Ctrl+F find, F3/Shift+F3 next/previous match, Ctrl+G go to line, Ctrl+R reload from disk,
+Shift+motion selects. Ctrl+V pastes what you copied in Kalipso; use your terminal's paste (usually
+Ctrl+Shift+V, or Cmd+V on macOS) for text from other programs. The gutter marks lines that differ
+from git's HEAD: green added, yellow changed, red for deleted lines. Binary files, files over 64 MB
+and anything that isn't a regular file won't open.
 
 With a language server, **F12** goes to a definition, **Shift+F12** comes back, and **F8** moves
 between problems, which are also shown next to their lines. See [Language servers](#language-servers).
 
-**Terminal:** every other key goes to the shell. Alt+S enters scroll mode, and the wheel scrolls.
+**Terminal:** every other key goes to the shell. Alt+S enters scroll mode, where Esc or `q` leaves,
+and the wheel scrolls.
 
-**Chat:** Enter sends, Ctrl+J adds a line, Esc stops the agent, PgUp/PgDn scroll. `/model` switches
-model, `/compact` summarizes the conversation now, `/copy` copies the last reply.
+**Chat:** Alt+T starts a chat, as does Enter when none is open: pick an agent, then a provider if
+you've set several keys. Enter sends, Ctrl+J adds a line, Esc stops the agent, PgUp/PgDn scroll.
+`/model` switches model, `/compact` summarizes the conversation now, `/copy` copies the last reply.
 
 ### If Alt keys don't reach Kalipso
 
 Terminals can keep these shortcuts for themselves. Clicking always works as a fallback.
+
+**macOS:** the Option key types special characters by default, so make it act as Alt. In Terminal,
+that's Settings > Profiles > Keyboard > Use Option as Meta key. In iTerm2, it's Settings > Profiles >
+Keys > General > Left Option key > Esc+.
 
 **WezTerm:** Kalipso sets a `KALIPSO` user variable while it runs, so a config can pass the keys
 through only then. Wrap your existing bindings:
@@ -143,8 +158,9 @@ Keys come from environment variables only. Kalipso never writes them to disk or 
 | OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` |
 
 Claude needs an API key from the Claude Console; a Claude subscription doesn't provide one. Your
-model choice per provider is saved in `~/.config/kalipso/config.json`. Claude defaults to
-`claude-opus-5-5`; for the others you pick from the provider's list once.
+model choice per provider is saved in `~/.config/kalipso/config.json` (`$XDG_CONFIG_HOME` replaces
+`~/.config` if set). Claude defaults to `claude-opus-5-5`; for the others you pick from the
+provider's list once.
 
 For Claude models that support it, Kalipso turns on server-side fallbacks: if safety classifiers
 decline a request, it's retried on a fallback model, billed at that model's rates.
@@ -197,9 +213,10 @@ model (prompt injection), so read commands before you allow them, and be careful
 ### Saved chats
 
 Chats are saved once each finishes a turn, and the Alt+T picker offers them under `Resume`. They live
-in `~/.local/share/kalipso/chats/`, one folder per project, readable only by you, and the newest 50
-per project are kept. They hold the full conversation, including any code the agent read, so delete
-them if that matters. An `a` answer isn't saved, so a resumed chat asks again.
+in `~/.local/share/kalipso/chats/` (`$XDG_DATA_HOME` replaces `~/.local/share` if set), one folder per
+project, readable only by you, and the newest 50 per project are kept. They hold the full
+conversation, including any code the agent read, so delete them if that matters. An `a` answer isn't
+saved, so a resumed chat asks again.
 
 ## Tests
 
@@ -209,8 +226,8 @@ tests/e2e.sh            # drives the real binary in an isolated tmux, against te
 tests/install.sh        # drives install.sh offline, with stubs for downloads and builds
 ```
 
-All of these run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0` publishes
-Linux x86_64 and Apple silicon builds as a GitHub release.
+All of these run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0`
+publishes Linux x86_64 and Apple silicon builds as a GitHub release.
 
 Live tests are skipped by default. Some need no key; the rest make real, billed API calls:
 
