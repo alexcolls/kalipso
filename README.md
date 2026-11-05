@@ -14,10 +14,23 @@ shells, an editor, and multi-chat with AI agents, on Claude, OpenAI, Grok and Op
 
 ## Install
 
-Download `kalipso-<version>-x86_64-linux.tar.gz` from
+```sh
+curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install.sh | sh
+```
+
+This installs the latest release to `~/.local/bin` and adds that folder to your `PATH` if it isn't
+there yet. Run it again to update.
+
+Linux x86_64 with glibc 2.39 or newer (Ubuntu 24.04, Debian 13 and later) and Apple silicon Macs
+get a prebuilt binary. Anything else builds from source, which takes a few minutes and needs a C
+compiler. If Rust is missing or older than 1.89, it fetches a temporary copy for the build.
+
+Kalipso doesn't run natively on Windows. Run the command in a WSL terminal, or in Git Bash, which
+hands over to WSL. `kalipso` then works in WSL terminals, not in PowerShell or cmd.
+
+To install by hand, download a build from
 [Releases](https://github.com/alexcolls/kalipso/releases), unpack it, and put `kalipso` on your
-`PATH`. It needs glibc 2.39 or newer, so Ubuntu 24.04 or Debian 13 and later. On anything else,
-build from source with Rust.
+`PATH`.
 
 ## Run it
 
@@ -26,7 +39,7 @@ kalipso path/to/project                  # defaults to the current folder
 cargo run --release -- path/to/project   # or from source
 ```
 
-Linux is the tested platform. Agents' `run_command` tool needs a Unix system.
+Linux is the tested platform. macOS passes the test suite, but hasn't been tried by hand.
 
 ## Keys
 
@@ -193,9 +206,10 @@ them if that matters. An `a` answer isn't saved, so a resumed chat asks again.
 ```sh
 cargo test              # unit and integration tests, offline
 tests/e2e.sh            # drives the real binary in an isolated tmux, against tests/mock_llm.py and tests/mock_lsp.py
+tests/install.sh        # drives install.sh offline, with stubs for downloads and builds
 ```
 
-Both run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0` publishes
+All of these run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0` publishes
 Linux x86_64 and Apple silicon builds as a GitHub release.
 
 Live tests are skipped by default. Some need no key; the rest make real, billed API calls:
