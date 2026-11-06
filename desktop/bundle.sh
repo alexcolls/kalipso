@@ -21,7 +21,7 @@ repo=$PWD
 work=$repo/target/bundle
 mkdir -p "$work/downloads"
 
-if command -v sha256sum >/dev/null; then sha=sha256sum; else sha="shasum -a 256"; fi
+if [ "$(uname -s)" = Darwin ]; then sha="shasum -a 256"; else sha=sha256sum; fi
 
 fetch() { # url, sha256. Leaves the path in $file. Reuses an earlier download, as the sha256 pins it.
     file=$work/downloads/${1##*/}
@@ -29,7 +29,7 @@ fetch() { # url, sha256. Leaves the path in $file. Reuses an earlier download, a
         curl -fsSL --retry 3 "$1" -o "$file.part"
         mv "$file.part" "$file"
     fi
-    (cd "$work/downloads" && echo "$2  ${file##*/}" | $sha -c --quiet)
+    (cd "$work/downloads" && echo "$2  ${file##*/}" | $sha -c >/dev/null)
 }
 
 case $(uname -s) in
