@@ -47,7 +47,7 @@ $gui = Get-Process wezterm-gui -ErrorAction SilentlyContinue
 Check 'the window stays open' ($null -ne $gui)
 if (-not $gui) { # Why, from WezTerm's own log.
     Write-Host "The launcher exited with $($launcher.ExitCode)."
-    Get-ChildItem "$HOME\.local\share\wezterm" -Recurse -File -ErrorAction SilentlyContinue |
+    Get-ChildItem "$HOME\.local\share\wezterm" -Filter '*log*' -ErrorAction SilentlyContinue |
         ForEach-Object { Write-Host "--- $_"; Get-Content $_.FullName -Tail 40 | Write-Host }
 }
 $gui | Stop-Process -Force
