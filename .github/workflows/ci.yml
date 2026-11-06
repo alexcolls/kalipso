@@ -14,11 +14,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal -c clippy -c rustfmt
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - run: tests/install.sh
       - run: sudo apt-get update && sudo apt-get install -y tmux vim
       - run: tests/e2e.sh
         env:
           LANG: C.UTF-8
+
+  # The Kalipso program, on each OS it ships for. Here rather than only at release, so a broken
+  # bundle shows up on the PR.
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal -c clippy
+      - run: cargo clippy -p kalipso --locked -- -D warnings
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri
+      - run: desktop/bundle.sh dev
+      - if: runner.os == 'Windows'
+        run: tests/install.ps1
+        shell: pwsh
