@@ -42,9 +42,9 @@ Check 'replaces an older install' (-not (Test-Path $kept))
 Check "doesn't add it to PATH twice" (@((UserPath) | Where-Object { $_ -eq $app }).Count -eq 1)
 
 # GitHub's runner has no OpenGL driver, which the config asks for, so WezTerm couldn't make a window.
-# Only this throwaway install gets its software renderer instead.
+# Only this throwaway install uses WebGpu instead, which can run on Windows' software adapter.
 $config = Join-Path $app 'config\kalipso.lua'
-(Get-Content -Raw $config).Replace('return config', "config.front_end = 'Software'`nreturn config") | Set-Content $config
+(Get-Content -Raw $config).Replace('return config', "config.front_end = 'WebGpu'`nreturn config") | Set-Content $config
 
 $launcher = Start-Process (Join-Path $app 'kalipso.exe') -PassThru
 Start-Sleep 8
