@@ -1,0 +1,2 @@
+# Windows checkouts would otherwise get CRLF, which breaks the shell scripts in Git Bash.
+* text=auto eol=lf

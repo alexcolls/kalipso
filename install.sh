@@ -1,66 +1,15 @@
 #!/bin/sh
-# Installs the latest Kalipso to ~/.local/bin and puts that folder on PATH.
+# Installs the latest Kalipso program and puts the kalipso command on PATH. On Windows, use install.ps1.
+# The terminal IDE is separate: install-cli.sh installs kalipso-cli.
 #
 #   curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install.sh | sh
 set -eu
 
 repo=alexcolls/kalipso
-min_rust_minor=89 # What Cargo.lock's dependencies need, as in Rust 1.89.
 
 die() {
     echo "kalipso install: $*" >&2
     exit 1
-}
-
-install_in_wsl() {
-    # Kalipso uses std::os::unix, so it doesn't compile for Windows. WSL is Linux, so it runs there.
-    command -v wsl.exe >/dev/null ||
-        die "on Windows, Kalipso runs in WSL. Run 'wsl --install' in an admin PowerShell, reboot, then run this again."
-    echo "Windows detected, installing inside WSL."
-    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' wsl.exe --exec sh -c \
-        "curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sh"
-    echo "Open a WSL terminal to use the kalipso command."
-}
-
-# Leaves the path of a verified binary that runs here in $bin, or $bin empty if there isn't one.
-download_release() { # platform, as the release names it
-    name=kalipso-$tag-$1
-    url=https://github.com/$repo/releases/download/$tag/$name.tar.gz
-    # Macs get theirs after Linux, and older releases have none, so this may not exist.
-    curl -fsL "$url" -o "$tmp/$name.tar.gz" || return 0
-    curl -fsSL "$url.sha256" -o "$tmp/$name.tar.gz.sha256"
-    if [ "$os" = Darwin ]; then sha="shasum -a 256"; else sha=sha256sum; fi
-    (cd "$tmp" && $sha -c "$name.tar.gz.sha256" >/dev/null) || die "checksum mismatch for $name.tar.gz"
-    tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
-
-    # Its usage error first means it started cleanly. musl can't load it, and glibc older than
-    # the build's refuses it, or starts it but prints a loader warning on every launch.
-    output=$("$tmp/$name/kalipso" /nonexistent 2>&1) || :
-    case $output in
-    usage:*) bin=$tmp/$name/kalipso ;;
-    esac
-}
-
-build_from_source() {
-    echo "No prebuilt binary runs on this system, so building $tag from source. This takes a few minutes."
-    if [ "$os" = Darwin ]; then
-        xcode-select -p >/dev/null 2>&1 ||
-            die "building needs Apple's command line tools. Run 'xcode-select --install', then run this again."
-    fi
-    command -v cc >/dev/null || die "building needs a C compiler. Install gcc or clang, then run this again."
-
-    PATH=${CARGO_HOME:-$HOME/.cargo}/bin:$PATH
-    minor=$(cargo --version 2>/dev/null | cut -d. -f2)
-    if [ "${minor:-0}" -lt "$min_rust_minor" ]; then
-        echo "Needs Rust 1.$min_rust_minor or newer, so fetching a temporary copy just for this build."
-        export CARGO_HOME="$tmp/cargo" RUSTUP_HOME="$tmp/rustup"
-        curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
-        PATH=$CARGO_HOME/bin:$PATH
-    fi
-
-    # The PATH entry only stops cargo warning that this temporary folder isn't on PATH.
-    PATH=$tmp/build/bin:$PATH cargo install --locked --git "https://github.com/$repo" --tag "$tag" --root "$tmp/build"
-    bin=$tmp/build/bin/kalipso
 }
 
 add_to_path() {
@@ -79,13 +28,56 @@ add_to_path() {
     echo "Added ~/.local/bin to PATH in $rc. Open a new terminal, or run: $line"
 }
 
+install_linux() { # unpacked release folder
+    app=$HOME/.local/lib/kalipso
+    mkdir -p "$(dirname "$app")"
+    rm -rf "$app"
+    mv "$1" "$app"
+    launcher=$app/kalipso
+
+    apps=${XDG_DATA_HOME:-$HOME/.local/share}/applications
+    mkdir -p "$apps"
+    cat >"$apps/kalipso.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Kalipso
+Comment=Futuristic open-source terminal
+Exec="$launcher"
+Icon=$app/wezterm/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wezterm.png
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=kalipso
+EOF
+}
+
+install_macos() { # unpacked release folder
+    app=$HOME/Applications/Kalipso.app
+    mkdir -p "$(dirname "$app")"
+    rm -rf "$app"
+    mv "$1/Kalipso.app" "$app"
+    launcher=$app/Contents/MacOS/kalipso
+}
+
 # Everything runs from here, so a download cut short by `curl | sh` runs nothing.
 main() {
     os=$(uname -s)
-    case $os in
+    arch=$(uname -m)
+    case $os-$arch in
+    Linux-x86_64)
+        platform=x86_64-linux
+        wezterm=wezterm/usr/bin/wezterm
+        sha=sha256sum
+        ;;
+    Darwin-arm64)
+        platform=aarch64-macos
+        wezterm=Kalipso.app/Contents/Resources/WezTerm.app/Contents/MacOS/wezterm
+        sha="shasum -a 256"
+        ;;
     MINGW* | MSYS* | CYGWIN*)
-        install_in_wsl
-        return
+        die "on Windows, run this in PowerShell: irm https://raw.githubusercontent.com/$repo/main/install.ps1 | iex"
+        ;;
+    *)
+        die "there's no Kalipso build for $os $arch yet. The terminal IDE can still build here: see install-cli.sh in $repo."
         ;;
     esac
     command -v curl >/dev/null || die "curl is required."
@@ -99,25 +91,37 @@ main() {
 
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
-    bin=
-    case $os-$(uname -m) in
-    Linux-x86_64) download_release x86_64-linux ;;
-    Darwin-arm64) download_release aarch64-macos ;;
-    esac
-    if [ -z "$bin" ]; then
-        build_from_source
-    fi
+    name=kalipso-$tag-$platform
+    url=https://github.com/$repo/releases/download/$tag/$name.tar.gz
+    # Each OS's build is uploaded a few minutes after the release appears.
+    curl -fsL "$url" -o "$tmp/$name.tar.gz" ||
+        die "couldn't download $name.tar.gz. If $tag came out in the last few minutes, try again soon."
+    curl -fsSL "$url.sha256" -o "$tmp/$name.tar.gz.sha256"
+    (cd "$tmp" && $sha -c "$name.tar.gz.sha256" >/dev/null) || die "checksum mismatch for $name.tar.gz"
+    tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
+
+    # Checked before anything is replaced, so a system that can't run it keeps what it has.
+    "$tmp/$name/$wezterm" --version >/dev/null 2>&1 || die "Kalipso's WezTerm doesn't run on this system."
 
     bin_dir=$HOME/.local/bin
+    link=$bin_dir/kalipso
+    if [ -f "$link" ] && [ ! -L "$link" ]; then
+        echo "Replacing $link, the old terminal IDE. It's now kalipso-cli, which install-cli.sh installs."
+    fi
+
+    case $os in
+    Linux) install_linux "$tmp/$name" ;;
+    Darwin) install_macos "$tmp/$name" ;;
+    esac
     mkdir -p "$bin_dir"
-    install -m 755 "$bin" "$bin_dir/kalipso"
-    echo "Installed Kalipso $tag to $bin_dir/kalipso"
+    ln -sf "$launcher" "$link"
+    echo "Installed Kalipso $tag to $app"
 
     case :$PATH: in
     *":$bin_dir:"*) ;;
     *) add_to_path ;;
     esac
-    echo "Run it with: kalipso [directory]"
+    echo "Open it from your applications, or run: kalipso [directory]"
 }
 
 main

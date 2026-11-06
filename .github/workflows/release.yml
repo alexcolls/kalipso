@@ -1,7 +1,8 @@
 name: Release
 
-# Pushing a tag like v0.1.0 publishes Linux x86_64 and Apple silicon builds. If the macOS job
-# fails, the Linux release stands and install.sh builds from source on Macs.
+# Pushing a tag like v0.1.0 publishes kalipso-cli for Linux x86_64 and Apple silicon, and the Kalipso
+# program for those and Windows. If a later job fails, what's published stands: install-cli.sh builds
+# from source on Macs, and install.sh and install.ps1 say the build isn't there.
 on:
   push:
     tags: ["v*"]
@@ -22,9 +23,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          name="kalipso-$TAG-x86_64-linux"
+          name="kalipso-cli-$TAG-x86_64-linux"
           mkdir "$name"
-          cp target/release/kalipso README.md LICENSE "$name"
+          cp target/release/kalipso-cli README.md LICENSE "$name"
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
           gh release create "$TAG" "$name.tar.gz" "$name.tar.gz.sha256" --generate-notes --verify-tag
@@ -42,9 +43,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          name="kalipso-$TAG-aarch64-macos"
+          name="kalipso-cli-$TAG-aarch64-macos"
           mkdir "$name"
-          cp target/release/kalipso README.md LICENSE "$name"
+          cp target/release/kalipso-cli README.md LICENSE "$name"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
           gh release upload "$TAG" "$name.tar.gz" "$name.tar.gz.sha256"
+
+  desktop:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri
+      - name: Bundle and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          desktop/bundle.sh "$TAG"
+          find target/bundle -maxdepth 1 -type f -exec gh release upload "$TAG" {} +
