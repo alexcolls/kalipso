@@ -34,7 +34,9 @@ git settings aren't part of Kalipso.
 
 **What's been tried:** on Linux, opening the window on Wayland, and the Alt keys on X11. macOS and
 Windows haven't been run by hand. On macOS the Dock may show the name WezTerm. On Windows,
-`kalipso-cli` only runs through WSL, and its Alt keys may not get through from there.
+`kalipso-cli` only runs through WSL, and its Alt keys may not get through from there. Kalipso also
+needs an OpenGL driver on Windows, which some virtual machines lack: without one no window opens, and
+the log in `%USERPROFILE%\.local\share\wezterm` says why.
 
 To remove it, delete:
 
