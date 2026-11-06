@@ -3,6 +3,9 @@ name = "kalipso-cli"
 version = "0.1.1"
 edition = "2024"
 
+[workspace]
+members = ["desktop"]
+
 [dependencies]
 crossterm = { version = "0.29", features = ["osc52"] }
 ignore = "0.4"
