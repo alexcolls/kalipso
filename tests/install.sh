@@ -1,5 +1,5 @@
 #!/bin/sh
-# Drives install-cli.sh offline, with stubs for everything that downloads, builds or asks the OS.
+# Drives install-cli.sh and install.sh offline, with stubs for everything that downloads, builds or asks the OS.
 set -u
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -139,5 +139,66 @@ extra_path=$root/wsl: os=MINGW64_NT-10.0 run
 check "hands over to WSL on Windows" 'grep -q "exec sh -c curl .*install-cli.sh | sh" "$fixtures/wsl-args" && [ ! -e "$home/.local" ]'
 new_home
 check "explains WSL when it's missing" '! os=MINGW64_NT-10.0 run && grep -q "wsl --install" "$root/out"'
+
+# The Kalipso program, from install.sh.
+installer=$repo/install.sh
+app=.local/lib/kalipso
+make_program() { # body of the bundled wezterm, platform
+    platform=${2:-x86_64-linux}
+    program=kalipso-v9.9.9-$platform
+    rm -rf "${fixtures:?}/$program"
+    case $platform in
+    *linux) wezterm=$fixtures/$program/wezterm/usr/bin/wezterm launcher=$fixtures/$program/kalipso ;;
+    *macos)
+        wezterm=$fixtures/$program/Kalipso.app/Contents/Resources/WezTerm.app/Contents/MacOS/wezterm
+        launcher=$fixtures/$program/Kalipso.app/Contents/MacOS/kalipso
+        ;;
+    esac
+    mkdir -p "$(dirname "$wezterm")" "$(dirname "$launcher")"
+    stub "$wezterm" "$1"
+    stub "$launcher" ':'
+    (cd "$fixtures" && tar czf "$program.tar.gz" "$program" && sha256sum "$program.tar.gz" >"$program.tar.gz.sha256")
+}
+
+make_program ':'
+new_home
+run
+check "installs the program" '[ -x "$home/$app/kalipso" ]'
+check "links the kalipso command to it" '[ "$(readlink "$home/.local/bin/kalipso")" = "$home/$app/kalipso" ]'
+check "adds a desktop entry" 'grep -qx "Exec=\"$home/$app/kalipso\"" "$home/.local/share/applications/kalipso.desktop" && grep -qx StartupWMClass=kalipso "$home/.local/share/applications/kalipso.desktop"'
+check "adds the command's folder to PATH" 'grep -q "\.local/bin" "$home/.zshrc"'
+touch "$home/$app/stale"
+run
+check "replaces an older install" '[ -x "$home/$app/kalipso" ] && [ ! -e "$home/$app/stale" ]'
+check "doesn't add it to PATH twice" '[ "$(grep -c "\.local/bin" "$home/.zshrc")" = 1 ]'
+
+new_home
+mkdir -p "$home/.local/bin"
+echo old >"$home/.local/bin/kalipso"
+run
+check "replaces the old terminal IDE and says where it went" '[ -L "$home/.local/bin/kalipso" ] && grep -q "install-cli.sh" "$root/out"'
+
+new_home
+run
+touch "$home/$app/kept"
+echo "0000  $program.tar.gz" >"$fixtures/$program.tar.gz.sha256"
+check "refuses a bad checksum and keeps what's installed" '! run && [ -e "$home/$app/kept" ] && grep -q "checksum mismatch" "$root/out"'
+make_program 'exit 1'
+check "refuses a build that can't run here and keeps what's installed" '! run && [ -e "$home/$app/kept" ] && grep -q "run on this system" "$root/out"'
+rm "$fixtures/$program.tar.gz"
+check "explains a build that isn't uploaded yet" '! run && [ -e "$home/$app/kept" ] && grep -q "try again soon" "$root/out"'
+
+make_program ':' aarch64-macos
+new_home
+os=Darwin arch=arm64 run
+check "installs the app on Apple silicon" '[ -x "$home/Applications/Kalipso.app/Contents/MacOS/kalipso" ] && [ "$(readlink "$home/.local/bin/kalipso")" = "$home/Applications/Kalipso.app/Contents/MacOS/kalipso" ]'
+check "adds no desktop entry on macOS" '[ ! -e "$home/.local/share/applications" ]'
+
+new_home
+check "has no build for Intel Macs" '! os=Darwin arch=x86_64 run && grep -q "no Kalipso build" "$root/out" && [ ! -e "$home/.local" ]'
+new_home
+check "has no build for Linux on ARM" '! arch=aarch64 run && grep -q "no Kalipso build" "$root/out" && [ ! -e "$home/.local" ]'
+new_home
+check "points Git Bash to install.ps1" '! os=MINGW64_NT-10.0 run && grep -q "install.ps1" "$root/out" && [ ! -e "$home/.local" ]'
 
 exit "$failed"
