@@ -4,7 +4,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 cargo build -q || exit 1
-BIN=$PWD/target/debug/kalipso
+BIN=$PWD/target/debug/kalipso-cli
 T=(tmux -L "kalipso-test-$$" -f /dev/null)
 WORK=$(mktemp -d)
 CONFIG=$(mktemp -d)

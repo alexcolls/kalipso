@@ -1,8 +1,9 @@
 #!/bin/sh
-# Drives install.sh offline, with stubs for everything that downloads, builds or asks the OS.
+# Drives install-cli.sh offline, with stubs for everything that downloads, builds or asks the OS.
 set -u
 
-installer=$(cd "$(dirname "$0")/.." && pwd)/install.sh
+repo=$(cd "$(dirname "$0")/.." && pwd)
+installer=$repo/install-cli.sh
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 stubs=$root/stubs
@@ -31,21 +32,23 @@ case $url in
 esac'
 for pair in new:1.99 old:1.75; do
     stub "$root/cargo-${pair%:*}/cargo" "[ \"\$1\" = --version ] && { echo 'cargo ${pair#*:}.0 (abc 2026-01-01)'; exit; }
+# The workspace has two packages with binaries, so cargo install refuses to guess.
+case \" \$* \" in *' kalipso-cli '*) ;; *) echo 'error: multiple packages with binaries found' >&2; exit 101 ;; esac
 while [ \"\$1\" != --root ]; do shift; done
 mkdir -p \"\$2/bin\"
-printf '#!/bin/sh\n# built by %s\n' \"\$0\" >\"\$2/bin/kalipso\"
-chmod +x \"\$2/bin/kalipso\""
+printf '#!/bin/sh\n# built by %s\n' \"\$0\" >\"\$2/bin/kalipso-cli\"
+chmod +x \"\$2/bin/kalipso-cli\""
 done
 stub "$fixtures/rustup.sh" 'mkdir -p "$CARGO_HOME/bin"
 cp "$FIXTURES/cargo" "$CARGO_HOME/bin/cargo"'
 cp "$root/cargo-new/cargo" "$fixtures/cargo"
 
-usage='echo "usage: kalipso [directory]" >&2; exit 2'
+usage='echo "usage: kalipso-cli [directory]" >&2; exit 2'
 make_release() { # body of the packaged binary, platform
-    release=kalipso-v9.9.9-${2:-x86_64-linux}
+    release=kalipso-cli-v9.9.9-${2:-x86_64-linux}
     rm -rf "${fixtures:?}/$release"
     mkdir "$fixtures/$release"
-    stub "$fixtures/$release/kalipso" "$1"
+    stub "$fixtures/$release/kalipso-cli" "$1"
     (cd "$fixtures" && tar czf "$release.tar.gz" "$release" && sha256sum "$release.tar.gz" >"$release.tar.gz.sha256")
 }
 
@@ -80,7 +83,7 @@ run() {
 make_release "$usage"
 new_home
 run
-check "downloads the release" '[ -x "$home/.local/bin/kalipso" ] && ! grep -q built "$home/.local/bin/kalipso"'
+check "downloads the release" '[ -x "$home/.local/bin/kalipso-cli" ] && ! grep -q built "$home/.local/bin/kalipso-cli"'
 check "adds the folder to PATH" 'grep -q "\.local/bin" "$home/.zshrc"'
 run
 check "doesn't add it twice" '[ "$(grep -c "\.local/bin" "$home/.zshrc")" = 1 ]'
@@ -98,42 +101,42 @@ check "falls back to .profile for other shells" 'grep -q "\.local/bin" "$home/.p
 
 new_home
 echo "0000  $release.tar.gz" >"$fixtures/$release.tar.gz.sha256"
-check "refuses a bad checksum" '! run && [ ! -e "$home/.local/bin/kalipso" ] && grep -q "checksum mismatch" "$root/out"'
+check "refuses a bad checksum" '! run && [ ! -e "$home/.local/bin/kalipso-cli" ] && grep -q "checksum mismatch" "$root/out"'
 
 make_release 'echo "version GLIBC_2.99 not found" >&2; exit 1'
 new_home
 extra_path=$root/cargo-new: run
-check "builds from source when the release can't run" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso"'
+check "builds from source when the release can't run" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso-cli"'
 make_release "echo \"weak version GLIBC_2.39 not found\" >&2; $usage" # Seen for real on Ubuntu 22.04.
 new_home
 extra_path=$root/cargo-new: run
-check "builds from source when the release warns on every launch" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso"'
+check "builds from source when the release warns on every launch" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso-cli"'
 make_release "$usage"
 
 new_home
 extra_path=$root/cargo-new: os=Darwin arch=arm64 shell=/bin/bash run
-check "builds on Apple silicon when the release has no Mac build" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso"'
+check "builds on Apple silicon when the release has no Mac build" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso-cli"'
 check "uses .bash_profile on macOS" 'grep -q "\.local/bin" "$home/.bash_profile"'
 make_release "$usage" aarch64-macos
 new_home
 os=Darwin arch=arm64 run
-check "downloads the Mac build on Apple silicon" '[ -x "$home/.local/bin/kalipso" ] && ! grep -q built "$home/.local/bin/kalipso"'
+check "downloads the Mac build on Apple silicon" '[ -x "$home/.local/bin/kalipso-cli" ] && ! grep -q built "$home/.local/bin/kalipso-cli"'
 new_home
 extra_path=$root/cargo-new: os=Darwin arch=x86_64 run
-check "builds on Intel Macs" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso"'
+check "builds on Intel Macs" 'grep -q "built by $root/cargo-new" "$home/.local/bin/kalipso-cli"'
 new_home
 check "asks for Apple's tools on macOS" '! os=Darwin no_xcode=1 run && grep -q "xcode-select --install" "$root/out"'
 
 new_home
 extra_path=$root/cargo-old: arch=aarch64 run
-check "replaces a too old Rust" 'grep -q "built by .*/cargo/bin/cargo" "$home/.local/bin/kalipso"'
+check "replaces a too old Rust" 'grep -q "built by .*/cargo/bin/cargo" "$home/.local/bin/kalipso-cli"'
 new_home
 arch=aarch64 run
-check "fetches Rust when there is none" 'grep -q "built by .*/cargo/bin/cargo" "$home/.local/bin/kalipso"'
+check "fetches Rust when there is none" 'grep -q "built by .*/cargo/bin/cargo" "$home/.local/bin/kalipso-cli"'
 
 new_home
 extra_path=$root/wsl: os=MINGW64_NT-10.0 run
-check "hands over to WSL on Windows" 'grep -q "exec sh -c curl .*install.sh | sh" "$fixtures/wsl-args" && [ ! -e "$home/.local" ]'
+check "hands over to WSL on Windows" 'grep -q "exec sh -c curl .*install-cli.sh | sh" "$fixtures/wsl-args" && [ ! -e "$home/.local" ]'
 new_home
 check "explains WSL when it's missing" '! os=MINGW64_NT-10.0 run && grep -q "wsl --install" "$root/out"'
 

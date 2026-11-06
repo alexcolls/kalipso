@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag like v0.1.0 publishes Linux x86_64 and Apple silicon builds. If the macOS job
-# fails, the Linux release stands and install.sh builds from source on Macs.
+# fails, the Linux release stands and install-cli.sh builds from source on Macs.
 on:
   push:
     tags: ["v*"]
@@ -22,9 +22,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          name="kalipso-$TAG-x86_64-linux"
+          name="kalipso-cli-$TAG-x86_64-linux"
           mkdir "$name"
-          cp target/release/kalipso README.md LICENSE "$name"
+          cp target/release/kalipso-cli README.md LICENSE "$name"
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
           gh release create "$TAG" "$name.tar.gz" "$name.tar.gz.sha256" --generate-notes --verify-tag
@@ -42,9 +42,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          name="kalipso-$TAG-aarch64-macos"
+          name="kalipso-cli-$TAG-aarch64-macos"
           mkdir "$name"
-          cp target/release/kalipso README.md LICENSE "$name"
+          cp target/release/kalipso-cli README.md LICENSE "$name"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
           gh release upload "$TAG" "$name.tar.gz" "$name.tar.gz.sha256"

@@ -1,30 +1,30 @@
 #!/bin/sh
-# Installs the latest Kalipso to ~/.local/bin and puts that folder on PATH.
+# Installs the latest kalipso-cli to ~/.local/bin and puts that folder on PATH.
 #
-#   curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install-cli.sh | sh
 set -eu
 
 repo=alexcolls/kalipso
 min_rust_minor=89 # What Cargo.lock's dependencies need, as in Rust 1.89.
 
 die() {
-    echo "kalipso install: $*" >&2
+    echo "kalipso-cli install: $*" >&2
     exit 1
 }
 
 install_in_wsl() {
-    # Kalipso uses std::os::unix, so it doesn't compile for Windows. WSL is Linux, so it runs there.
+    # kalipso-cli uses std::os::unix, so it doesn't compile for Windows. WSL is Linux, so it runs there.
     command -v wsl.exe >/dev/null ||
-        die "on Windows, Kalipso runs in WSL. Run 'wsl --install' in an admin PowerShell, reboot, then run this again."
+        die "on Windows, kalipso-cli runs in WSL. Run 'wsl --install' in an admin PowerShell, reboot, then run this again."
     echo "Windows detected, installing inside WSL."
     MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' wsl.exe --exec sh -c \
-        "curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sh"
-    echo "Open a WSL terminal to use the kalipso command."
+        "curl -fsSL https://raw.githubusercontent.com/$repo/main/install-cli.sh | sh"
+    echo "Open a WSL terminal to use the kalipso-cli command."
 }
 
 # Leaves the path of a verified binary that runs here in $bin, or $bin empty if there isn't one.
 download_release() { # platform, as the release names it
-    name=kalipso-$tag-$1
+    name=kalipso-cli-$tag-$1
     url=https://github.com/$repo/releases/download/$tag/$name.tar.gz
     # Macs get theirs after Linux, and older releases have none, so this may not exist.
     curl -fsL "$url" -o "$tmp/$name.tar.gz" || return 0
@@ -35,9 +35,9 @@ download_release() { # platform, as the release names it
 
     # Its usage error first means it started cleanly. musl can't load it, and glibc older than
     # the build's refuses it, or starts it but prints a loader warning on every launch.
-    output=$("$tmp/$name/kalipso" /nonexistent 2>&1) || :
+    output=$("$tmp/$name/kalipso-cli" /nonexistent 2>&1) || :
     case $output in
-    usage:*) bin=$tmp/$name/kalipso ;;
+    usage:*) bin=$tmp/$name/kalipso-cli ;;
     esac
 }
 
@@ -59,8 +59,8 @@ build_from_source() {
     fi
 
     # The PATH entry only stops cargo warning that this temporary folder isn't on PATH.
-    PATH=$tmp/build/bin:$PATH cargo install --locked --git "https://github.com/$repo" --tag "$tag" --root "$tmp/build"
-    bin=$tmp/build/bin/kalipso
+    PATH=$tmp/build/bin:$PATH cargo install --locked --git "https://github.com/$repo" --tag "$tag" --root "$tmp/build" kalipso-cli
+    bin=$tmp/build/bin/kalipso-cli
 }
 
 add_to_path() {
@@ -110,14 +110,14 @@ main() {
 
     bin_dir=$HOME/.local/bin
     mkdir -p "$bin_dir"
-    install -m 755 "$bin" "$bin_dir/kalipso"
-    echo "Installed Kalipso $tag to $bin_dir/kalipso"
+    install -m 755 "$bin" "$bin_dir/kalipso-cli"
+    echo "Installed kalipso-cli $tag to $bin_dir/kalipso-cli"
 
     case :$PATH: in
     *":$bin_dir:"*) ;;
     *) add_to_path ;;
     esac
-    echo "Run it with: kalipso [directory]"
+    echo "Run it with: kalipso-cli [directory]"
 }
 
 main

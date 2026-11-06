@@ -41,12 +41,12 @@ fn main() -> ExitCode {
     let root = match root.canonicalize() {
         Ok(root) if root.is_dir() => root,
         _ => {
-            eprintln!("usage: kalipso [directory]");
+            eprintln!("usage: kalipso-cli [directory]");
             return ExitCode::from(2);
         }
     };
     if !stdout().is_terminal() {
-        eprintln!("kalipso must run in a terminal");
+        eprintln!("kalipso-cli must run in a terminal");
         return ExitCode::from(2);
     }
 
@@ -71,7 +71,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("kalipso: {err}");
+            eprintln!("kalipso-cli: {err}");
             ExitCode::FAILURE
         }
     }
