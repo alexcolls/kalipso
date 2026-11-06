@@ -41,11 +41,19 @@ Check "refuses a bad checksum and keeps what's installed" ($refused -and (Test-P
 Check 'replaces an older install' (-not (Test-Path $kept))
 Check "doesn't add it to PATH twice" (@((UserPath) | Where-Object { $_ -eq $app }).Count -eq 1)
 
+# GitHub's runner has no OpenGL driver, which the config asks for, so WezTerm couldn't make a window.
+# Only this throwaway install gets its software renderer instead.
+$config = Join-Path $app 'config\kalipso.lua'
+(Get-Content -Raw $config).Replace('return config', "config.front_end = 'Software'`nreturn config") | Set-Content $config
+
 $launcher = Start-Process (Join-Path $app 'kalipso.exe') -PassThru
 Start-Sleep 8
 $gui = Get-Process wezterm-gui -ErrorAction SilentlyContinue
 Check 'the window stays open' ($null -ne $gui)
-if (-not $gui) { # Why, from WezTerm's own log.
+if ($gui) {
+    $shell = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' AND ParentProcessId = $($gui.Id)"
+    Check 'it opens PowerShell' ($null -ne $shell)
+} else { # Why, from WezTerm's own log.
     Write-Host "The launcher exited with $($launcher.ExitCode)."
     Get-ChildItem "$HOME\.local\share\wezterm" -Filter '*log*' -ErrorAction SilentlyContinue |
         ForEach-Object { Write-Host "--- $_"; Get-Content $_.FullName -Tail 40 | Write-Host }
