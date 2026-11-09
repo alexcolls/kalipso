@@ -1,4 +1,4 @@
-//! The Kalipso program: opens the bundled WezTerm with the bundled config.
+//! The Kalipso program: opens the bundled WezTerm with the bundled config, running kalipso-cli in it.
 #![windows_subsystem = "windows"] // No console window when started from the Start menu.
 
 use std::env;
@@ -19,6 +19,13 @@ const CONFIG: &str = if cfg!(target_os = "macos") {
 } else {
     "config/kalipso.lua"
 };
+
+// kalipso-cli's installer puts it in ~/.local/bin, which a menu launch may not have on PATH.
+#[cfg(unix)]
+const HOST: &str = r#"PATH="$HOME/.local/bin:$PATH"
+if command -v kalipso-cli >/dev/null; then exec kalipso-cli; fi
+echo "kalipso-cli isn't installed. Install it with install-cli.sh from https://github.com/alexcolls/kalipso"
+exec "${SHELL:-/bin/sh}" -l"#;
 
 #[cfg(windows)]
 unsafe extern "system" {
@@ -46,8 +53,12 @@ fn main() -> io::Result<()> {
         .arg("--config-file")
         .arg(dir.join(CONFIG))
         .args(["start", "--class", "kalipso"]);
-    if let Some(directory) = env::args_os().nth(1).map(PathBuf::from) {
-        // WezTerm would open in the home folder instead, without saying so.
+    // WezTerm would open in the home folder instead, without saying so.
+    let directory = match env::args_os().nth(1) {
+        Some(directory) => Some(PathBuf::from(directory)),
+        None => env::current_dir().ok(),
+    };
+    if let Some(directory) = directory {
         if !directory.is_dir() {
             eprintln!(
                 "kalipso: {} isn't a directory\nusage: kalipso [directory]",
@@ -57,6 +68,9 @@ fn main() -> io::Result<()> {
         }
         command.arg("--cwd").arg(directory);
     }
+    // The program is a host for kalipso-cli. Windows has none, so it gets a shell.
+    #[cfg(unix)]
+    command.args(["--", "sh", "-c", HOST]);
     run(command)
 }
 
