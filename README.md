@@ -1,50 +1,27 @@
+<div align="center">
+
 # kalipso
->_ Futuristic open-source terminal
 
-A terminal, in two separate programs:
+**Futuristic open-source terminal.**
 
-- **Kalipso** is a desktop terminal for Linux, macOS and Windows: [WezTerm](https://wezterm.org) with
-  [this configuration](https://github.com/alexcolls/wezterm-config), ten live-switchable themes and
-  FiraCode Nerd Font, with nothing else to install.
-- **kalipso-cli** is a VS Code/Cursor-style IDE that runs entirely in a terminal, including Kalipso:
-  project files, multiple shells, an editor, and multi-chat with AI agents, on Claude, OpenAI, Grok
-  and OpenRouter.
+[![CI](https://github.com/alexcolls/kalipso/actions/workflows/ci.yml/badge.svg)](https://github.com/alexcolls/kalipso/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alexcolls/kalipso)](https://github.com/alexcolls/kalipso/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Kalipso, the desktop program
+[Documentation](https://alexcolls.github.io/kalipso/) ·
+[Installation](docs/installation.md) ·
+[Releases](https://github.com/alexcolls/kalipso/releases)
 
-Linux x86_64 and Apple silicon Macs:
+</div>
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install.sh | sh
-```
+Kalipso is two separate programs that work well together:
 
-Windows x86_64, in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/alexcolls/kalipso/main/install.ps1 | iex
-```
-
-Run it again to update. Kalipso then appears with your applications, and `kalipso [directory]` opens a
-window from a shell. It opens your login shell, or PowerShell on Windows. It keeps its own copy of
-WezTerm and its config, so a WezTerm you already use is left alone.
-
-The keys and themes are in the
-[wezterm-config README](https://github.com/alexcolls/wezterm-config#keybindings). Its shell, prompt and
-git settings aren't part of Kalipso.
-
-**What's been tried:** on Linux, opening the window on Wayland, and the Alt keys on X11. macOS and
-Windows haven't been run by hand. On macOS the Dock may show the name WezTerm. On Windows,
-`kalipso-cli` only runs through WSL, and its Alt keys may not get through from there. Kalipso also
-needs an OpenGL driver on Windows, which some virtual machines lack: without one no window opens, and
-the log in `%USERPROFILE%\.local\share\wezterm` says why.
-
-To remove it, delete:
-
-- **Linux:** `~/.local/lib/kalipso`, `~/.local/bin/kalipso` and `~/.local/share/applications/kalipso.desktop`
-- **macOS:** `~/Applications/Kalipso.app` and `~/.local/bin/kalipso`
-- **Windows:** `%LOCALAPPDATA%\Programs\Kalipso`, its Start menu entry and its `PATH` entry
-
-## kalipso-cli, the terminal IDE
+| | **Kalipso** | **kalipso-cli** |
+|---|---|---|
+| **What** | Desktop terminal: [WezTerm](https://wezterm.org) with [a curated config](https://github.com/alexcolls/wezterm-config), ten live-switchable themes and FiraCode Nerd Font | VS Code/Cursor-style IDE that runs entirely in a terminal |
+| **Includes** | Nothing else to install | Project files, multiple shells, an editor, git gutter, language servers, multi-chat with AI agents |
+| **AI** | n/a | Claude, OpenAI, Grok and OpenRouter |
+| **Platforms** | Linux x86_64, Apple silicon macOS, Windows x86_64 | Linux x86_64, Apple silicon macOS, Windows via WSL |
 
 ```
 ┌ 1 Files ┬ 3 Editor ────────┬ 4 Chat ──┐
@@ -54,242 +31,74 @@ To remove it, delete:
 └─────────┴──────────────────┴──────────┘
 ```
 
-### Install
+## Quick start
+
+**Kalipso (desktop)**
+
+```sh
+# Linux x86_64, Apple silicon macOS
+curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install.sh | sh
+```
+
+```powershell
+# Windows x86_64, PowerShell
+irm https://raw.githubusercontent.com/alexcolls/kalipso/main/install.ps1 | iex
+```
+
+**kalipso-cli (terminal IDE)**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install-cli.sh | sh
+export ANTHROPIC_API_KEY=...     # or OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY
+kalipso-cli path/to/project
 ```
 
-This installs the latest release to `~/.local/bin` and adds that folder to your `PATH` if it isn't
-there yet. Run it again to update.
+Run an installer again to update. Press **Ctrl+Q** to quit, **Alt+4** then Enter to start a chat.
 
-Linux x86_64 with glibc 2.39 or newer (Ubuntu 24.04, Debian 13 and later) and Apple silicon Macs
-get a prebuilt binary. Anything else builds from source, which takes a few minutes and needs a C
-compiler. If Rust is missing or older than 1.89, it fetches a temporary copy for the build.
+## Highlights
 
-kalipso-cli doesn't run natively on Windows. Run the command in a WSL terminal, or in Git Bash, which
-hands over to WSL. `kalipso-cli` then works in WSL terminals, not in PowerShell or cmd.
+- **Four-pane workspace** with tabs: files, terminal, editor and chat, driven by Alt keys and the mouse.
+- **Multi-chat AI agents** (Code, Test, Review, Commit, Design) with per-action approval of file writes and commands.
+- **Editor** with undo/redo, find, go to line, git change gutter, and fuzzy file and text search.
+- **Language servers** for Rust, Python, TypeScript, Go and C/C++: diagnostics and go to definition, started only with your consent.
+- **Private by default:** keys come from environment variables only, are never written to disk, and are stripped from commands and language servers.
+- **Resumable chats** with automatic compaction of long conversations.
 
-To install by hand, download a build from
-[Releases](https://github.com/alexcolls/kalipso/releases), unpack it, and put `kalipso-cli` on your
-`PATH`.
+## Documentation
 
-To remove it, delete `~/.local/bin/kalipso-cli` and the `PATH` line the installer added to your shell
-config. Settings and saved chats are in `~/.config/kalipso` and `~/.local/share/kalipso`.
+Browse it at **<https://alexcolls.github.io/kalipso/>**, or read the Markdown in [`docs/`](docs/).
 
-### Run it
-
-```sh
-kalipso-cli path/to/project              # defaults to the current folder
-cargo run --release -- path/to/project   # or from source
-```
-
-**Ctrl+Q** quits. If you have unsaved changes or a running agent, it asks first: `y` quits, Esc stays.
-
-To chat with an agent, set a key from [AI providers](#ai-providers) before you start kalipso-cli. Then
-press Alt+4 and Enter, and pick an agent.
-
-Linux is the tested platform. macOS passes the test suite, but hasn't been tried by hand.
-
-### Keys
-
-These work everywhere, including inside the terminal pane:
-
-| Key | Action |
+| Guide | Covers |
 |---|---|
-| Alt+←/→ | Files ↔ Editor/Terminal ↔ Chat |
-| Alt+↑/↓ | Editor ↕ Terminal |
-| Alt+1/2/3/4 | Focus Files / Terminal / Editor / Chat |
-| Alt+Z | Zoom the focused pane to full screen and back |
-| Alt+T / Alt+W | New / close a tab in the focused pane |
-| Alt+PgUp / Alt+PgDn | Previous / next tab |
-| Ctrl+Q | Quit |
+| [Installation](docs/installation.md) | Installers, manual and source installs, uninstalling |
+| [Kalipso desktop](docs/desktop.md) | The desktop program, keys, themes, platform notes |
+| [Using kalipso-cli](docs/cli.md) | Panes, every key binding, editor, search, copying |
+| [AI providers and agents](docs/agents.md) | Keys, agents, long chats, safety model, saved chats |
+| [Language servers](docs/language-servers.md) | Supported servers, consent, features |
+| [Troubleshooting](docs/troubleshooting.md) | Alt keys on macOS, WezTerm and tmux; Windows issues |
+| [Development](docs/development.md) | Layout, tests, releases, previewing the docs |
 
-A click also focuses a pane. The status line always lists the focused pane's keys.
+## Security
 
-**Copying:** drag in the terminal or chat pane to copy what's on screen, or use `/copy` for the
-whole last reply. kalipso-cli captures the mouse, so hold Shift for your terminal's own selection, which
-runs across all panes.
+There is no sandbox. **Approval is the security boundary**: an approved command can do anything your
+user account can, and files or command output may contain prompt injection. Read commands before you
+allow them. Details in [AI providers and agents](docs/agents.md#safety-model).
 
-**Ctrl+P** finds a file by fuzzy name and **Alt+F** searches the project's text, from anywhere
-except the terminal pane, where those keys belong to the shell. Search skips gitignored and private
-files.
+## Status
 
-**Files:** Enter opens, ←/→ fold, `n` new file, `N` new folder, `r` rename, `d` or Delete deletes,
-`.` show hidden and ignored files, `R` refresh. In a git repository, `M` marks changed files, `A` new
-ones, and `•` folders with changes inside.
+Linux is the tested platform. macOS passes the test suite but hasn't been run by hand; Windows isn't
+tested by hand either. See [Kalipso desktop](docs/desktop.md#whats-been-tried).
 
-**Editor:** VS Code-style. Ctrl+S save, Ctrl+Z/Y undo/redo, Ctrl+C/X/V clipboard, Ctrl+A select
-all, Ctrl+F find, F3/Shift+F3 next/previous match, Ctrl+G go to line, Ctrl+R reload from disk,
-Shift+motion selects. Ctrl+V pastes what you copied in kalipso-cli; use your terminal's paste (usually
-Ctrl+Shift+V, or Cmd+V on macOS) for text from other programs. The gutter marks lines that differ
-from git's HEAD: green added, yellow changed, red for deleted lines. Binary files, files over 64 MB
-and anything that isn't a regular file won't open.
-
-With a language server, **F12** goes to a definition, **Shift+F12** comes back, and **F8** moves
-between problems, which are also shown next to their lines. See [Language servers](#language-servers).
-
-**Terminal:** every other key goes to the shell. Alt+S enters scroll mode, where Esc or `q` leaves,
-and the wheel scrolls.
-
-**Chat:** Alt+T starts a chat, as does Enter when none is open: pick an agent, then a provider if
-you've set several keys. Enter sends, Ctrl+J adds a line, Esc stops the agent, PgUp/PgDn scroll.
-`/model` switches model, `/compact` summarizes the conversation now, `/copy` copies the last reply.
-
-#### If Alt keys don't reach kalipso-cli
-
-Terminals can keep these shortcuts for themselves. Clicking always works as a fallback.
-
-**macOS:** the Option key types special characters by default, so make it act as Alt. In Terminal,
-that's Settings > Profiles > Keyboard > Use Option as Meta key. In iTerm2, it's Settings > Profiles >
-Keys > General > Left Option key > Esc+.
-
-**WezTerm:** the [Kalipso program](#kalipso-the-desktop-program) already passes these keys through. For
-your own WezTerm: kalipso-cli sets a `KALIPSO` user variable while it runs, so a config can pass the
-keys through only then. Wrap your existing bindings:
-
-```lua
-local act = wezterm.action
-
-local function kalipso_or(key, fallback)
-  return wezterm.action_callback(function(window, pane)
-    if pane:get_user_vars().KALIPSO == '1' and pane:is_alt_screen_active() then
-      window:perform_action(act.SendKey { key = key, mods = 'ALT' }, pane)
-    else
-      window:perform_action(fallback, pane)
-    end
-  end)
-end
-
--- Do the same for the other arrows, and Alt+1-4 if you've bound them.
-{ key = 'LeftArrow', mods = 'ALT', action = kalipso_or('LeftArrow', act.ActivatePaneDirection 'Left') },
-```
-
-This also works over SSH. It doesn't work through tmux, which swallows the variable.
-
-**tmux**, if your config binds Alt+arrows:
-
-```tmux
-bind -n M-Left  if -F '#{==:#{pane_current_command},kalipso-cli}' 'send-keys M-Left'  'select-pane -L'
-bind -n M-Right if -F '#{==:#{pane_current_command},kalipso-cli}' 'send-keys M-Right' 'select-pane -R'
-bind -n M-Up    if -F '#{==:#{pane_current_command},kalipso-cli}' 'send-keys M-Up'    'select-pane -U'
-bind -n M-Down  if -F '#{==:#{pane_current_command},kalipso-cli}' 'send-keys M-Down'  'select-pane -D'
-```
-
-### Language servers
-
-kalipso-cli uses whichever of these is installed: `rust-analyzer`, `pyright-langserver` or `pylsp`,
-`typescript-language-server`, `gopls`, `clangd`. For Rust that's `rustup component add rust-analyzer`.
-
-**Language servers run code from the project they open**, such as build scripts and macros, so opening
-a file never starts one. The first F12 or F8 in a project asks you. A yes is saved for that project in
-`~/.config/kalipso/config.json`, and the server then starts by itself there. API keys are removed from
-its environment, and it stops when kalipso-cli does.
-
-Only diagnostics and go-to-definition are supported. If a definition has several locations, the first
-is used.
-
-### AI providers
-
-Keys come from environment variables only. kalipso-cli never writes them to disk or shows them.
-
-| Provider | Key | Base URL override |
-|---|---|---|
-| Claude | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` |
-| OpenAI | `OPENAI_API_KEY` | `OPENAI_BASE_URL` |
-| Grok | `XAI_API_KEY` | `XAI_BASE_URL` |
-| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` |
-
-Claude needs an API key from the Claude Console; a Claude subscription doesn't provide one. Your
-model choice per provider is saved in `~/.config/kalipso/config.json` (`$XDG_CONFIG_HOME` replaces
-`~/.config` if set). Claude defaults to `claude-opus-5-5`; for the others you pick from the
-provider's list once.
-
-For Claude models that support it, kalipso-cli turns on server-side fallbacks: if safety classifiers
-decline a request, it's retried on a fallback model, billed at that model's rates.
-
-A chat's agent and provider are fixed when it starts, because conversation history is stored in
-each provider's own format. `/model` switches within a provider; otherwise open a new chat.
-
-### Agents
-
-| Agent | Tools | Job |
-|---|---|---|
-| Code | all | Implement changes |
-| Test | all | Write and run tests, fix failures |
-| Review | read + `run_command` | Review diffs and code; no file-editing tools |
-| Commit | read + `run_command` | Inspect the diff, write the message, commit |
-| Design | read + `write_file` | Design docs and ASCII mockups; can't run commands |
-
-Each message also tells the agent which file is open, the cursor line, whether there are unsaved
-changes, and any selected text (up to 32 KB). The transcript shows this under your message, for
-example `with src/main.rs:42, 6 selected lines`. Selections in private files (see below) aren't sent.
-
-#### Long chats
-
-Every turn resends the conversation, so at 150,000 input tokens (or 80% of the model's limit, where
-the provider publishes it) kalipso-cli asks the model to summarize and continues from the summary. It
-also does this once if a provider says the conversation is too long, and `/compact` does it on
-request. The summary is built from the transcript without tool output, so the agent may need to read
-files again. The transcript on screen stays as it was.
-
-#### What agents can and can't do
-
-- Writing files and running commands shows you the diff or command first and waits for `y`, `n`, or
-  `a` (allow that tool for this chat tab). For a file change, `v` opens the proposed file in a
-  read-only editor tab with its changes marked, and you can answer from there.
-- File tools stay inside the project, after resolving symlinks.
-- Reading or writing `.env*`, key files, `.git/` and gitignored files always asks, even after `a`.
-  `search` skips them.
-- Commands run with the API key variables removed, a 120-second timeout and capped output.
-- After 50 model turns on one message, the agent pauses and waits for you, to limit cost.
-
-An agent's tool list only limits which tools it's offered. Review and Commit have no file-editing
-tools, but a command you approve can still change files. Instructions such as Commit's "never
-force-push" are guidance to the model, and nothing enforces them.
-
-**There is no sandbox, so approval is the real security boundary.** An approved command can do
-anything your user account can. Files and command output can contain instructions aimed at the
-model (prompt injection), so read commands before you allow them, and be careful with `a` on
-`run_command` in code you don't trust.
-
-#### Saved chats
-
-Chats are saved once each finishes a turn, and the Alt+T picker offers them under `Resume`. They live
-in `~/.local/share/kalipso/chats/` (`$XDG_DATA_HOME` replaces `~/.local/share` if set), one folder per
-project, readable only by you, and the newest 50 per project are kept. They hold the full
-conversation, including any code the agent read, so delete them if that matters. An `a` answer isn't
-saved, so a resumed chat asks again.
-
-## Tests
+## Contributing
 
 ```sh
-cargo test              # unit and integration tests, offline
-tests/e2e.sh            # drives the real binary in an isolated tmux, against tests/mock_llm.py and tests/mock_lsp.py
-tests/install.sh        # drives install-cli.sh and install.sh offline, with stubs for downloads and builds
-desktop/bundle.sh dev   # builds the Kalipso program for this OS into target/bundle, and checks it loads
-tests/install.ps1       # Windows only: drives install.ps1 against that bundle, then opens the program
+cargo test          # offline unit and integration tests
+tests/e2e.sh        # drives the real binary in tmux against mock servers
 ```
 
-All of these run in CI, with `cargo fmt --check` and `cargo clippy`. Pushing a tag like `v0.1.0`
-publishes both programs as a GitHub release: kalipso-cli for Linux x86_64 and Apple silicon, and
-Kalipso for those and Windows.
-
-Live tests are skipped by default. Some need no key; the rest make real, billed API calls:
-
-```sh
-cargo test -- --ignored live_openrouter_model_list live_claude_rejects   # no keys needed
-ANTHROPIC_API_KEY=... cargo test -- --ignored live_claude_tool
-OPENAI_API_KEY=... KALIPSO_TEST_MODEL=<model> cargo test -- --ignored live_openai_tool
-XAI_API_KEY=... KALIPSO_TEST_MODEL=<model> cargo test -- --ignored live_grok_tool
-OPENROUTER_API_KEY=... KALIPSO_TEST_MODEL=<model> cargo test -- --ignored live_openrouter_tool
-```
-
-## Not built yet
-
-Completion, hover and rename from language servers, editor splits, multi-cursor, custom agents, MCP, a settings UI, in-app API
-key entry, mouse forwarding to programs in the terminal pane, full Markdown rendering, and a Vim mode.
+CI also runs `cargo fmt --check`, `cargo clippy` and the installer tests. See
+[Development](docs/development.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

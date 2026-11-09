@@ -101,6 +101,7 @@ main() {
     tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
 
     # Checked before anything is replaced, so a system that can't run it keeps what it has.
+    [ -x "$tmp/$name/$wezterm" ] || die "$name.tar.gz has no WezTerm in it, so $tag is an old release. Try again once a newer one is out."
     "$tmp/$name/$wezterm" --version >/dev/null 2>&1 || die "Kalipso's WezTerm doesn't run on this system."
 
     bin_dir=$HOME/.local/bin
