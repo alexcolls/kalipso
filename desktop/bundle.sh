@@ -133,15 +133,26 @@ fi
 
 cd "$work"
 if [ "$platform" = x86_64-linux ]; then
-    # Through a symlink, as installed. 124 is timeout ending it, so the window stayed up.
+    # Through a symlink, as installed, with a stand-in kalipso-cli where install-cli.sh puts it. It
+    # says where it ran, then stays up. 124 is timeout ending it, so the window stayed up.
+    rm -rf home ran-in
+    mkdir -p home/.local/bin
+    printf '#!/bin/sh\npwd -P >"%s"\nexec sleep 60\n' "$work/ran-in" >home/.local/bin/kalipso-cli
+    chmod +x home/.local/bin/kalipso-cli
     ln -sf "$out/kalipso" kalipso-link
     status=0
-    env -u WAYLAND_DISPLAY xvfb-run -a timeout 8 ./kalipso-link || status=$?
+    HOME=$work/home env -u WAYLAND_DISPLAY xvfb-run -a timeout 8 ./kalipso-link || status=$?
     rm kalipso-link
     if [ "$status" != 124 ]; then
         echo "desktop/bundle.sh: the window didn't stay open (status $status)" >&2
         exit 1
     fi
+    # An empty window also stays open.
+    if [ "$(cat ran-in 2>/dev/null)" != "$(pwd -P)" ]; then
+        echo "desktop/bundle.sh: the window didn't run kalipso-cli in the current directory" >&2
+        exit 1
+    fi
+    rm -rf home ran-in
 fi
 
 if [ "$platform" = x86_64-windows ]; then
