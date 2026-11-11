@@ -58,8 +58,13 @@ start() {
 }
 
 start
-printf "%s isn't installed. Its official installer is:\n\n    %s\n\nPress Enter to run it here, or Alt+W to close this tab.\n" "$name" "$install"
-read -r _ || exit 1
+printf "%s isn't installed. Its official installer is:\n\n    %s\n\nType y and press Enter to run it here. Anything else closes this tab.\n" "$name" "$install"
+# Only an explicit yes runs it: an Enter typed ahead, while picking the tab, must not.
+read -r answer || exit 1
+case $answer in
+y | Y | yes | Yes) ;;
+*) exit 1 ;;
+esac
 sh -c "$install" && start
 printf "\n%s didn't install. Press Enter to close this tab.\n" "$name"
 read -r _"#;
@@ -141,6 +146,36 @@ mod tests {
         (term, rx)
     }
 
+    /// Types `text` and presses Enter.
+    fn answer(term: &mut Term, text: &str) {
+        let mut scroll = false;
+        for c in text.chars() {
+            term.on_key(
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &mut scroll,
+            );
+        }
+        term.on_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut scroll,
+        );
+    }
+
+    fn exits(term: &mut Term, rx: &mpsc::Receiver<Event>) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Event::PtyOutput { bytes, .. }) => term.feed(&bytes),
+                Ok(Event::PtyExit { id }) if id == term.id() => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// An installer that leaves a working `fakecli` in ~/.local/bin.
+    const FAKE_INSTALL: &str = "mkdir -p \"$HOME/.local/bin\" && printf '#!/bin/sh\\necho now running; sleep 5\\n' >\"$HOME/.local/bin/fakecli\" && chmod +x \"$HOME/.local/bin/fakecli\"";
+
     fn wait_for(term: &mut Term, rx: &mpsc::Receiver<Event>, wanted: &str) -> bool {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -200,13 +235,13 @@ mod tests {
     }
 
     #[test]
-    fn offers_the_official_installer_and_runs_it_on_enter() {
+    fn offers_the_official_installer_and_runs_it_on_yes() {
         let home = dir("install");
         let vendor = Vendor {
             name: "Fake",
             about: "",
             program: "fakecli",
-            install: "mkdir -p \"$HOME/.local/bin\" && printf '#!/bin/sh\\necho now running; sleep 5\\n' >\"$HOME/.local/bin/fakecli\" && chmod +x \"$HOME/.local/bin/fakecli\"",
+            install: FAKE_INSTALL,
         };
         let (mut term, rx) = run(&vendor, &home, "/bin/sh");
         assert!(
@@ -218,16 +253,32 @@ mod tests {
             term.contents().contains("mkdir -p"),
             "shows the install command"
         );
-        let mut scroll = false;
-        term.on_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut scroll,
-        );
+        answer(&mut term, "y");
         assert!(
             wait_for(&mut term, &rx, "now running"),
             "{}",
             term.contents()
         );
+    }
+
+    #[test]
+    fn enter_alone_closes_the_tab_without_installing() {
+        let home = dir("install-declined");
+        let vendor = Vendor {
+            name: "Fake",
+            about: "",
+            program: "fakecli",
+            install: FAKE_INSTALL,
+        };
+        let (mut term, rx) = run(&vendor, &home, "/bin/sh");
+        assert!(
+            wait_for(&mut term, &rx, "Fake isn't installed"),
+            "{}",
+            term.contents()
+        );
+        answer(&mut term, "");
+        assert!(exits(&mut term, &rx), "{}", term.contents());
+        assert!(!home.join(".local/bin/fakecli").exists());
     }
 
     #[test]
@@ -245,11 +296,7 @@ mod tests {
             "{}",
             term.contents()
         );
-        let mut scroll = false;
-        term.on_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut scroll,
-        );
+        answer(&mut term, "y");
         assert!(
             wait_for(&mut term, &rx, "Fake didn't install"),
             "{}",
