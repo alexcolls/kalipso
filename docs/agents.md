@@ -1,5 +1,31 @@
 # AI providers and agents
 
+## Claude Code, Codex and Antigravity
+
+Starting a chat also offers three other vendors' agent CLIs, for using a subscription you already
+have. Picking one opens it, as it ships, in a chat tab in the project folder. You sign in through its
+own login, and kalipso-cli never sees or stores those credentials.
+
+| Choice | Program | Sign in with |
+|---|---|---|
+| Claude Code | `claude` | A Claude Pro, Max, Ultra, Team or Enterprise plan, or a Claude Console account |
+| Codex | `codex` | A ChatGPT plan, or an OpenAI API key |
+| Antigravity | `agy` | A Google account |
+
+kalipso-cli looks for the program on `PATH`, then in `~/.local/bin`, then on your interactive shell's
+`PATH`, which covers installs through nvm or pnpm. If it isn't there, the tab shows the vendor's
+official install command and runs it if you type `y` and press Enter; any other answer closes the
+tab.
+
+The tab is a terminal running that CLI. Keys go to it, Ctrl+P and Alt+F included, except kalipso-cli's
+Alt keys for tabs and panes, Alt+S for scroll mode, and Ctrl+Q. The tab closes when the CLI exits,
+and Ctrl+Q asks before quitting while one is open, since kalipso-cli can't tell whether it's mid-task.
+These tabs aren't saved with your chats: each CLI keeps its own history.
+
+The tab gets your environment, as a shell would. If `ANTHROPIC_API_KEY` is set, for kalipso-cli's own
+agents for example, Claude Code asks once whether to use that key instead of your plan. Answer No to
+keep using your plan; `/status` in Claude Code shows which one is in use.
+
 ## Providers
 
 Keys come from environment variables only. kalipso-cli never writes them to disk or shows them.
@@ -11,7 +37,8 @@ Keys come from environment variables only. kalipso-cli never writes them to disk
 | Grok | `XAI_API_KEY` | `XAI_BASE_URL` |
 | OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` |
 
-Claude needs an API key from the Claude Console; a Claude subscription doesn't provide one.
+Claude needs an API key from the Claude Console; a Claude subscription doesn't provide one. To use a
+Claude plan, pick Claude Code instead.
 
 Your model choice per provider is saved in `~/.config/kalipso/config.json` (`$XDG_CONFIG_HOME`
 replaces `~/.config` if set). Claude defaults to `claude-opus-5-5`; for the others you pick from the
