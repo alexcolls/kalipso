@@ -17,9 +17,12 @@ irm https://raw.githubusercontent.com/alexcolls/kalipso/main/install.ps1 | iex
 ```
 
 Kalipso then appears with your applications, and `kalipso [directory]` opens a window from a shell.
-See [Kalipso desktop](desktop.md) for details and uninstalling.
+On Linux and macOS, `install.sh` also installs [kalipso-cli](#kalipso-cli-terminal-ide), which the
+window opens. See [Kalipso desktop](desktop.md) for details and uninstalling.
 
 ## kalipso-cli (terminal IDE)
+
+To install it on its own, for any terminal:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install-cli.sh | sh

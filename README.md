@@ -45,7 +45,9 @@ curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install.sh |
 irm https://raw.githubusercontent.com/alexcolls/kalipso/main/install.ps1 | iex
 ```
 
-**kalipso-cli (terminal IDE)**
+On Linux and macOS, `install.sh` installs kalipso-cli too, and the Kalipso window opens it.
+
+**kalipso-cli (terminal IDE), on its own**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install-cli.sh | sh
