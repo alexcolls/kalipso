@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs the latest Kalipso program and puts the kalipso command on PATH. On Windows, use install.ps1.
-# The terminal IDE is separate: install-cli.sh installs kalipso-cli.
+# Also installs kalipso-cli, the terminal IDE the program opens, through install-cli.sh.
 #
 #   curl -fsSL https://raw.githubusercontent.com/alexcolls/kalipso/main/install.sh | sh
 set -eu
@@ -108,7 +108,7 @@ main() {
     bin_dir=$HOME/.local/bin
     link=$bin_dir/kalipso
     if [ -f "$link" ] && [ ! -L "$link" ]; then
-        echo "Replacing $link, the old terminal IDE. It's now kalipso-cli, which install-cli.sh installs."
+        echo "Replacing $link, the old terminal IDE. It's now kalipso-cli, which this installs too."
     fi
 
     case $os in
@@ -119,10 +119,19 @@ main() {
     ln -sf "$launcher" "$link"
     echo "Installed Kalipso $tag to $app"
 
+    # The window runs kalipso-cli. Its installer knows the fallbacks, like building from source.
+    # With ~/.local/bin already on its PATH, it leaves the shell config to the PATH step below.
+    cli_installed=
+    if curl -fsSL "https://raw.githubusercontent.com/$repo/main/install-cli.sh" -o "$tmp/install-cli.sh"; then
+        PATH=$bin_dir:$PATH sh "$tmp/install-cli.sh" && cli_installed=1
+    fi
+
     case :$PATH: in
     *":$bin_dir:"*) ;;
     *) add_to_path ;;
     esac
+    [ -n "$cli_installed" ] ||
+        die "Kalipso is installed, but kalipso-cli isn't, so its window opens a shell. Install kalipso-cli with: curl -fsSL https://raw.githubusercontent.com/$repo/main/install-cli.sh | sh"
     echo "Open it from your applications, or run: kalipso [directory]"
 }
 
