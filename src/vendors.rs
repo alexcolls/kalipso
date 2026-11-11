@@ -42,8 +42,9 @@ pub const VENDORS: [Vendor; 3] = [
 /// $3 the install command.
 const LAUNCH: &str = r#"program=$1 name=$2 install=$3
 shell=${SHELL:-/bin/sh}
-# Where the vendors' installers put their programs, even before the shell config says so.
-PATH=$HOME/.local/bin:$PATH
+# Where the vendors' installers put their programs, even before the shell config says so. Last,
+# so a copy the user put earlier on PATH still wins.
+PATH=$PATH:$HOME/.local/bin
 export PATH
 
 start() {
@@ -121,9 +122,18 @@ mod tests {
 
     /// A tab with a fixed PATH and HOME, so the real CLIs on this machine never start.
     fn run(vendor: &Vendor, home: &Path, shell: &str) -> (Term, mpsc::Receiver<Event>) {
+        run_with_path(vendor, home, shell, "/usr/bin:/bin")
+    }
+
+    fn run_with_path(
+        vendor: &Vendor,
+        home: &Path,
+        shell: &str,
+        path: &str,
+    ) -> (Term, mpsc::Receiver<Event>) {
         let env = vec![
             ("HOME".to_owned(), home.display().to_string()),
-            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("PATH".to_owned(), path.to_owned()),
             ("SHELL".to_owned(), shell.to_owned()),
         ];
         let (tx, rx) = mpsc::sync_channel(256);
@@ -170,6 +180,20 @@ mod tests {
         let (mut term, rx) = run(&VENDORS[1], &home, &shell.display().to_string());
         assert!(
             wait_for(&mut term, &rx, "fake codex"),
+            "{}",
+            term.contents()
+        );
+    }
+
+    #[test]
+    fn prefers_the_users_path_to_local_bin() {
+        let home = dir("path-order");
+        script(&home.join(".local/bin/claude"), "echo local copy; sleep 5");
+        script(&home.join("bin/claude"), "echo chosen copy; sleep 5");
+        let path = format!("{}/bin:/usr/bin:/bin", home.display());
+        let (mut term, rx) = run_with_path(&VENDORS[0], &home, "/bin/sh", &path);
+        assert!(
+            wait_for(&mut term, &rx, "chosen copy"),
             "{}",
             term.contents()
         );
