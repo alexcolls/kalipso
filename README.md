@@ -20,7 +20,7 @@ Kalipso is two separate programs that work well together:
 |---|---|---|
 | **What** | Desktop terminal: [WezTerm](https://wezterm.org) with [a curated config](https://github.com/alexcolls/wezterm-config), ten live-switchable themes and FiraCode Nerd Font | VS Code/Cursor-style IDE that runs entirely in a terminal |
 | **Includes** | Nothing else to install | Project files, multiple shells, an editor, git gutter, language servers, multi-chat with AI agents |
-| **AI** | n/a | Claude, OpenAI, Grok and OpenRouter |
+| **AI** | n/a | Claude, OpenAI, Grok and OpenRouter with an API key, or Claude Code, Codex and Antigravity with your own plan |
 | **Platforms** | Linux x86_64, Apple silicon macOS, Windows x86_64 | Linux x86_64, Apple silicon macOS, Windows via WSL |
 
 ```
