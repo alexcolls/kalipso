@@ -65,7 +65,8 @@ main() {
     case $os-$arch in
     Linux-x86_64)
         platform=x86_64-linux
-        wezterm=wezterm/usr/bin/wezterm
+        # The GUI, as it loads the system libraries the CLI doesn't, like libxkbcommon.
+        wezterm=wezterm/usr/bin/wezterm-gui
         sha=sha256sum
         ;;
     Darwin-arm64)
@@ -102,7 +103,7 @@ main() {
 
     # Checked before anything is replaced, so a system that can't run it keeps what it has.
     [ -x "$tmp/$name/$wezterm" ] || die "$name.tar.gz has no WezTerm in it, so $tag is an old release. Try again once a newer one is out."
-    "$tmp/$name/$wezterm" --version >/dev/null 2>&1 || die "Kalipso's WezTerm doesn't run on this system."
+    output=$("$tmp/$name/$wezterm" --version 2>&1) || die "Kalipso's WezTerm doesn't run on this system: $output"
 
     bin_dir=$HOME/.local/bin
     link=$bin_dir/kalipso

@@ -148,7 +148,7 @@ make_program() { # body of the bundled wezterm, platform
     program=kalipso-v9.9.9-$platform
     rm -rf "${fixtures:?}/$program"
     case $platform in
-    *linux) wezterm=$fixtures/$program/wezterm/usr/bin/wezterm launcher=$fixtures/$program/kalipso ;;
+    *linux) wezterm=$fixtures/$program/wezterm/usr/bin/wezterm-gui launcher=$fixtures/$program/kalipso ;;
     *macos)
         wezterm=$fixtures/$program/Kalipso.app/Contents/Resources/WezTerm.app/Contents/MacOS/wezterm
         launcher=$fixtures/$program/Kalipso.app/Contents/MacOS/kalipso
@@ -183,8 +183,9 @@ run
 touch "$home/$app/kept"
 echo "0000  $program.tar.gz" >"$fixtures/$program.tar.gz.sha256"
 check "refuses a bad checksum and keeps what's installed" '! run && [ -e "$home/$app/kept" ] && grep -q "checksum mismatch" "$root/out"'
-make_program 'exit 1'
+make_program 'echo "wezterm-gui: error while loading shared libraries: libxkbcommon-x11.so.0" >&2; exit 127'
 check "refuses a build that can't run here and keeps what's installed" '! run && [ -e "$home/$app/kept" ] && grep -q "run on this system" "$root/out"'
+check "says why it can't run" 'grep -q "libxkbcommon-x11.so.0" "$root/out"'
 rm "$fixtures/$program.tar.gz"
 check "explains a build that isn't uploaded yet" '! run && [ -e "$home/$app/kept" ] && grep -q "try again soon" "$root/out"'
 
