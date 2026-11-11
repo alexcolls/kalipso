@@ -58,6 +58,9 @@ x86_64-linux)
     chmod +x "$file"
     # Extracted, so users don't need FUSE.
     (cd "$out" && "$file" --appimage-extract >/dev/null && mv squashfs-root wezterm)
+    # Its libxkbcommon is Ubuntu 20.04's, too old for newer systems' Compose files, which it complains
+    # about on every launch. libxkbcommon-x11 has to match it, so both come from the system instead.
+    rm "$out/wezterm/usr/lib/libxkbcommon.so.0" "$out/wezterm/usr/lib/libxkbcommon-x11.so.0"
     resources=$out
     cli=$out/wezterm/usr/bin/wezterm
     ;;
@@ -135,24 +138,30 @@ cd "$work"
 if [ "$platform" = x86_64-linux ]; then
     # Through a symlink, as installed, with a stand-in kalipso-cli where install-cli.sh puts it. It
     # says where it ran, then stays up. 124 is timeout ending it, so the window stayed up.
-    rm -rf home ran-in
+    rm -rf home ran-in launch.log
     mkdir -p home/.local/bin
     printf '#!/bin/sh\npwd -P >"%s"\nexec sleep 60\n' "$work/ran-in" >home/.local/bin/kalipso-cli
     chmod +x home/.local/bin/kalipso-cli
     ln -sf "$out/kalipso" kalipso-link
     status=0
-    HOME=$work/home env -u WAYLAND_DISPLAY xvfb-run -a timeout 8 ./kalipso-link || status=$?
+    HOME=$work/home env -u WAYLAND_DISPLAY xvfb-run -a timeout 8 ./kalipso-link 2>launch.log || status=$?
     rm kalipso-link
     if [ "$status" != 124 ]; then
+        cat launch.log >&2
         echo "desktop/bundle.sh: the window didn't stay open (status $status)" >&2
         exit 1
     fi
     # An empty window also stays open.
     if [ "$(cat ran-in 2>/dev/null)" != "$(pwd -P)" ]; then
+        cat launch.log >&2
         echo "desktop/bundle.sh: the window didn't run kalipso-cli in the current directory" >&2
         exit 1
     fi
-    rm -rf home ran-in
+    if grep xkbcommon launch.log >&2; then
+        echo "desktop/bundle.sh: WezTerm's libxkbcommon complained, so it isn't the system's" >&2
+        exit 1
+    fi
+    rm -rf home ran-in launch.log
 fi
 
 if [ "$platform" = x86_64-windows ]; then
