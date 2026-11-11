@@ -109,6 +109,10 @@ git -C "$WORK" -c user.name=t -c user.email=t@example.com commit -qm first
 mkdir "$CONFIG/bin"
 printf '#!/bin/sh\nexec python3 "%s/tests/mock_lsp.py"\n' "$PWD" > "$CONFIG/bin/rust-analyzer"
 chmod +x "$CONFIG/bin/rust-analyzer"
+# A fake Claude Code, so the real one, if this machine has it, never starts.
+printf '#!/bin/sh\necho fake claude ready\nwhile read -r line; do echo "claude got: $line"; done\n' \
+    > "$CONFIG/bin/claude"
+chmod +x "$CONFIG/bin/claude"
 
 # `env`, because tmux overwrites SHELL in new panes. Plain sh keeps results independent of
 # anyone's shell config. Only Claude has a key, pointed at the mock, and the real config is
@@ -280,6 +284,7 @@ expect "Alt+T starts a new shell" "back=6"
 key M-4
 focus "chat focused" "4 Chat"
 expect "welcome lists agents" "Commit: inspect the diff"
+expect "welcome lists the vendors' CLIs" "Claude Code: Anthropic's"
 expect "welcome shows the provider with a key" "✓ Claude"
 expect "welcome names the missing keys" "set OPENAI_API_KEY"
 key Enter; expect "Enter opens the agent picker" "New chat: pick an agent"
@@ -289,7 +294,12 @@ key -l 'revi'; key Enter
 expect "filtering picks the right agent, and one provider skips the provider picker" "Review 1"
 key M-w; gone "Alt+W closes an idle chat" "Review 1"
 key Enter; key Enter
-expect "the first agent is selected by default" "Code 2"
+expect "the first choice is Claude Code, in its own CLI" "fake claude ready"
+key -l 'hello claude'; key Enter
+expect "keys reach the vendor's CLI" "claude got: hello claude"
+key M-w; gone "Alt+W closes the vendor's tab" "fake claude ready"
+key Enter; key -l 'code: impl'; key Enter
+expect "Kalipso's agents come after the vendors' CLIs" "Code 2"
 expect "Claude gets its default model" "claude-opus-5-5"
 
 key -l 'make a file'; key C-j; key -l 'on two lines'
