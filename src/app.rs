@@ -23,6 +23,7 @@ use crate::llm::{ModelInfo, Provider};
 use crate::lsp::{self, LspEvent, SERVERS, Servers};
 use crate::term::Terminals;
 use crate::tools;
+use crate::vendors::{VENDORS, Vendor};
 
 /// The most selected text sent along with a chat message.
 const MAX_CONTEXT_BYTES: usize = 32 * 1024;
@@ -690,10 +691,13 @@ impl App {
             }
             Event::SearchDone { query, hits, more } => self.on_search_done(query, hits, more),
             Event::PtyOutput { id, bytes } => {
-                self.terminals.on_output(id, &bytes);
+                if !self.chats.on_pty_output(id, &bytes) {
+                    self.terminals.on_output(id, &bytes);
+                }
                 self.needs_draw = true;
             }
             Event::PtyExit { id } => {
+                self.chats.on_pty_exit(id);
                 self.terminals.on_exit(id);
                 self.needs_draw = true;
             }
@@ -859,10 +863,12 @@ impl App {
 
     fn new_chat(&mut self) {
         let saved = self.chats.resumable();
+        let vendors = VENDORS.iter().map(Vendor::label);
         let agents = AGENTS
             .iter()
             .map(|agent| format!("{}: {}", agent.name, agent.about));
-        let items = agents
+        let items = vendors
+            .chain(agents)
             .chain(saved.iter().map(|chat| chat.label.clone()))
             .collect();
         self.modal = Some(Modal::pick(
@@ -934,11 +940,16 @@ impl App {
     }
 
     /// Keys handled before the focused pane sees them, including the terminal pane.
+    /// Whether a program in a terminal has focus: a shell, or a vendor's CLI in the chat pane.
+    fn program_focused(&self) -> bool {
+        self.focus == Focus::Terminal || (self.focus == Focus::Chat && self.chats.vendor_active())
+    }
+
     fn on_global_key(&mut self, key: KeyEvent) -> bool {
-        // Not in the terminal pane, where Ctrl+P belongs to the shell.
+        // Not where a program has focus, as Ctrl+P belongs to it.
         if key.modifiers == KeyModifiers::CONTROL
             && key.code == KeyCode::Char('p')
-            && self.focus != Focus::Terminal
+            && !self.program_focused()
         {
             self.find_file();
             return true;
@@ -983,8 +994,8 @@ impl App {
             KeyCode::Char('3') => self.set_focus(Focus::Editor),
             KeyCode::Char('4') => self.set_focus(Focus::Chat),
             KeyCode::Char('z') => self.zoom = !self.zoom,
-            // Not in the terminal pane, where Alt+F belongs to the shell.
-            KeyCode::Char('f') if self.focus != Focus::Terminal => self.search_prompt(),
+            // Not where a program has focus, as Alt+F belongs to it.
+            KeyCode::Char('f') if !self.program_focused() => self.search_prompt(),
             KeyCode::Char('t') => self.new_tab(),
             KeyCode::Char('w') => self.close_tab(),
             KeyCode::PageUp => self.cycle_tab(-1),
@@ -1026,6 +1037,7 @@ impl App {
                 }
             }
             Focus::Terminal => self.terminals.close_tab(),
+            Focus::Chat if self.chats.vendor_active() => self.chats.close_vendor(),
             Focus::Chat => {
                 let Some(chat) = self.chats.active_chat() else {
                     return;
@@ -1282,9 +1294,17 @@ impl App {
                     self.set_focus(Focus::Chat);
                     return Ok(());
                 }
+                if let Some(vendor) = VENDORS.iter().find(|vendor| vendor.label() == value) {
+                    self.chats
+                        .open_vendor(vendor)
+                        .map_err(|err| format!("Can't start {}: {err}", vendor.name))?;
+                    self.set_focus(Focus::Chat);
+                    return Ok(());
+                }
+                // With the colon, so "Codex: ..." isn't taken for the Code agent.
                 let agent = AGENTS
                     .iter()
-                    .position(|agent| value.starts_with(agent.name))
+                    .position(|agent| value.starts_with(&format!("{}: ", agent.name)))
                     .ok_or("Unknown agent")?;
                 let ready: Vec<Provider> = Provider::ALL
                     .into_iter()
@@ -1863,6 +1883,108 @@ mod tests {
         let areas = Areas::compute(area, Some(Focus::Chat));
         assert_eq!(areas.chat, Rect::new(0, 0, 100, 39));
         assert!(areas.files.is_empty() && areas.editor.is_empty() && areas.terminal.is_empty());
+    }
+
+    fn screen_text(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn the_empty_chat_pane_offers_vendor_clis_before_api_key_agents() {
+        let mut app = test_app();
+        app.zoom = true;
+        app.set_focus(Focus::Chat);
+        let text = screen_text(&mut app);
+        let plan = text.find("With your own plan").expect("vendor section");
+        let key = text.find("With an API key").expect("agent section");
+        assert!(plan < key);
+        for vendor in &VENDORS {
+            assert!(text[plan..key].contains(vendor.name), "{}", vendor.name);
+        }
+    }
+
+    fn vendor_screen(app: &App) -> String {
+        app.chats
+            .vendors
+            .first()
+            .map_or_else(String::new, |tab| tab.term.contents())
+    }
+
+    #[test]
+    fn picking_a_vendor_runs_its_cli_in_a_chat_tab_that_gets_the_keys() {
+        let (_, dir) = app_in("vendor");
+        let (tx, rx) = mpsc::sync_channel(256);
+        let mut app = App::new(dir.clone(), tx);
+        // A fake codex where its installer puts it, and a PATH without the real one.
+        let home = dir.join("home");
+        let bin = home.join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            bin.join("codex"),
+            "#!/bin/sh\necho \"codex in $(pwd)\"\nread -r line\necho \"got $line\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(bin.join("codex"), fs::Permissions::from_mode(0o755)).unwrap();
+        app.chats.vendor_env = vec![
+            ("HOME".to_owned(), home.display().to_string()),
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("SHELL".to_owned(), "/bin/sh".to_owned()),
+        ];
+
+        app.handle(alt(KeyCode::Char('4')));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        type_text(&mut app, "Codex");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.chats.vendor_active(), "{:?}", app.message);
+        assert!(app.chats.tabs.is_empty(), "Codex isn't the Code agent");
+        assert!(screen_text(&mut app).contains("Codex"));
+        let wanted = format!("codex in {}", dir.display());
+        pump(&mut app, &rx, |app| vendor_screen(app).contains(&wanted));
+
+        // A Kalipso chat goes before the vendor tab, and the vendor tab is one step on.
+        app.chats.create(0, Provider::Claude, "m".to_owned());
+        assert!(!app.chats.vendor_active());
+        app.handle(alt(KeyCode::PageDown));
+        assert!(app.chats.vendor_active());
+
+        press(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(
+            app.modal.is_none(),
+            "Ctrl+P goes to the CLI, not the file finder"
+        );
+        type_text(&mut app, "hi");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        pump(&mut app, &rx, |app| vendor_screen(app).contains("got hi"));
+
+        // The fake exits after one line, which closes its tab and leaves the chat active.
+        pump(&mut app, &rx, |app| app.chats.vendors.is_empty());
+        assert!(!app.chats.vendor_active());
+        assert!(app.chats.active_chat().is_some());
+    }
+
+    #[test]
+    fn alt_w_closes_a_vendor_tab() {
+        let (_, dir) = app_in("vendor-close");
+        let (tx, _rx) = mpsc::sync_channel(256);
+        let mut app = App::new(dir.clone(), tx);
+        app.chats.vendor_env = vec![
+            ("HOME".to_owned(), dir.display().to_string()),
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("SHELL".to_owned(), "/bin/sh".to_owned()),
+        ];
+        app.chats.open_vendor(&VENDORS[0]).unwrap();
+        app.set_focus(Focus::Chat);
+        app.handle(alt(KeyCode::Char('w')));
+        assert!(app.chats.vendors.is_empty());
     }
 
     #[test]

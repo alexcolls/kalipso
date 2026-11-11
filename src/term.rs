@@ -78,6 +78,15 @@ impl Drop for Term {
 }
 
 impl Term {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    #[cfg(test)]
+    pub fn contents(&self) -> String {
+        self.parser.screen().contents()
+    }
+
     fn title(&self) -> String {
         match &self.parser.callbacks().title {
             Some(title) if !title.is_empty() => title.clone(),
@@ -186,7 +195,7 @@ impl Term {
         }
     }
 
-    fn feed(&mut self, bytes: &[u8]) {
+    pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
         let reply = std::mem::take(&mut self.parser.callbacks_mut().reply);
         if !reply.is_empty() {

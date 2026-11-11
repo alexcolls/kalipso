@@ -1,4 +1,5 @@
-//! The chat pane: tabs of conversations, each driving one agent's tool loop.
+//! The chat pane: tabs of conversations, each driving one agent's tool loop, and tabs running
+//! other vendors' agent CLIs.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -28,9 +29,12 @@ use crate::llm::{
     self, ClaudeFeatures, DEFAULT_CLAUDE_MODEL, Delta, ModelInfo, Provider, Request, Stop,
     ToolCall, Turn,
 };
+use crate::term::{self, SCROLL_HINTS};
 use crate::tools::{self, Gate, READ_TOOLS, ToolOutput};
+use crate::vendors::{VENDORS, Vendor, VendorTab};
 
 pub const HINTS: &str = "Enter send  Ctrl+J newline  Esc stop  PgUp/PgDn scroll  drag copies  /model /compact /copy  Alt+T new chat";
+const VENDOR_HINTS: &str = "Alt+T new chat  Alt+W close  Alt+PgUp/PgDn tabs  Alt+S scroll mode  wheel scrolls  drag copies";
 const APPROVE_HINTS: &str = "y allow  n decline  a always in this tab  v view in editor  Esc stop the agent  PgUp/PgDn scroll";
 
 /// Model turns allowed for one user message, to limit runaway cost.
@@ -1108,6 +1112,14 @@ pub struct Chats {
     hits: TabHits,
     /// Replaces the provider's URL and key. Tests point this at a local server.
     pub endpoint_override: Option<(String, String)>,
+    /// Tabs running other vendors' agent CLIs. The tab line shows them after `tabs`, and
+    /// `active` counts across both.
+    pub vendors: Vec<VendorTab>,
+    vendor_scroll: bool,
+    /// The vendor tabs' screen at the last draw, for starting the next one at the right size.
+    vendor_size: (u16, u16),
+    /// Added to the vendor CLIs' environment. Tests point PATH and HOME at fakes.
+    pub vendor_env: Vec<(String, String)>,
 }
 
 fn default_config_path() -> PathBuf {
@@ -1167,6 +1179,10 @@ impl Chats {
             config,
             hits: TabHits::default(),
             endpoint_override: None,
+            vendors: Vec::new(),
+            vendor_scroll: false,
+            vendor_size: (24, 80),
+            vendor_env: Vec::new(),
         }
     }
 
@@ -1453,22 +1469,89 @@ impl Chats {
         self.active = self.tabs.len() - 1;
     }
 
+    /// The active Kalipso chat. None while a vendor's CLI is active.
     pub fn active_chat(&mut self) -> Option<&mut Chat> {
         self.tabs.get_mut(self.active)
+    }
+
+    fn tab_count(&self) -> usize {
+        self.tabs.len() + self.vendors.len()
+    }
+
+    /// Whether the active tab runs a vendor's CLI, which gets every key a terminal would.
+    pub fn vendor_active(&self) -> bool {
+        self.active >= self.tabs.len() && self.active < self.tab_count()
+    }
+
+    fn active_vendor(&mut self) -> Option<&mut VendorTab> {
+        let index = self.active.checked_sub(self.tabs.len())?;
+        self.vendors.get_mut(index)
+    }
+
+    /// Opens a tab running the vendor's CLI in the project, or its installer if it's missing.
+    pub fn open_vendor(&mut self, vendor: &'static Vendor) -> Result<(), String> {
+        let command = vendor.launch(&self.root, &self.vendor_env);
+        let term = term::spawn(command, 1, self.vendor_size, self.tx.clone())?;
+        self.vendors.push(VendorTab { vendor, term });
+        self.active = self.tab_count() - 1;
+        self.vendor_scroll = false;
+        Ok(())
+    }
+
+    fn remove_vendor(&mut self, index: usize) {
+        self.vendors.remove(index);
+        let position = self.tabs.len() + index;
+        if self.active > position {
+            self.active -= 1;
+        }
+        self.active = self.active.min(self.tab_count().saturating_sub(1));
+        self.vendor_scroll = false;
+    }
+
+    /// Closes the active vendor tab, which stops its CLI.
+    pub fn close_vendor(&mut self) {
+        if let Some(index) = self.active.checked_sub(self.tabs.len())
+            && index < self.vendors.len()
+        {
+            self.remove_vendor(index);
+        }
+    }
+
+    /// Returns whether the output was for a vendor tab.
+    pub fn on_pty_output(&mut self, id: u64, bytes: &[u8]) -> bool {
+        match self.vendors.iter_mut().find(|tab| tab.term.id() == id) {
+            Some(tab) => {
+                tab.term.feed(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A vendor's CLI ended, so its tab closes, as a terminal's does.
+    pub fn on_pty_exit(&mut self, id: u64) {
+        if let Some(index) = self.vendors.iter().position(|tab| tab.term.id() == id) {
+            self.vendors[index].term.reap();
+            self.remove_vendor(index);
+        }
     }
 
     pub fn close(&mut self, id: u64) {
         if let Some(index) = self.tabs.iter().position(|chat| chat.id == id) {
             self.tabs[index].cancel.store(true, Ordering::Relaxed);
             self.tabs.remove(index);
-            self.active = self.active.min(self.tabs.len().saturating_sub(1));
+            if self.active > index {
+                self.active -= 1;
+            }
+            self.active = self.active.min(self.tab_count().saturating_sub(1));
         }
     }
 
     pub fn cycle(&mut self, delta: isize) {
-        if !self.tabs.is_empty() {
-            let count = self.tabs.len() as isize;
+        let count = self.tab_count() as isize;
+        if count > 0 {
             self.active = (self.active as isize + delta).rem_euclid(count) as usize;
+            self.vendor_scroll = false;
         }
     }
 
@@ -1567,6 +1650,12 @@ impl Chats {
         clipboard: &str,
         editor: Option<EditorContext>,
     ) -> ChatCmd {
+        let mut scroll = self.vendor_scroll;
+        if let Some(tab) = self.active_vendor() {
+            tab.term.on_key(key, &mut scroll);
+            self.vendor_scroll = scroll;
+            return ChatCmd::None;
+        }
         if self.tabs.is_empty() {
             return if key.code == KeyCode::Enter {
                 ChatCmd::NewChat
@@ -1664,7 +1753,9 @@ impl Chats {
     }
 
     pub fn paste(&mut self, text: &str) {
-        if let Some(chat) = self.active_chat() {
+        if let Some(tab) = self.active_vendor() {
+            tab.term.paste(text);
+        } else if let Some(chat) = self.active_chat() {
             chat.input
                 .insert(&text.replace("\r\n", "\n").replace('\r', "\n"));
         }
@@ -1675,6 +1766,15 @@ impl Chats {
             && let Some(index) = self.hits.at(mouse.column, mouse.row)
         {
             self.active = index;
+            self.vendor_scroll = false;
+            return;
+        }
+        if let Some(tab) = self.active_vendor() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => tab.term.wheel(true),
+                MouseEventKind::ScrollDown => tab.term.wheel(false),
+                _ => {}
+            }
             return;
         }
         let Some(chat) = self.active_chat() else {
@@ -1688,6 +1788,13 @@ impl Chats {
     }
 
     pub fn hints(&self) -> &'static str {
+        if self.vendor_active() {
+            return if self.vendor_scroll {
+                SCROLL_HINTS
+            } else {
+                VENDOR_HINTS
+            };
+        }
         match self.tabs.get(self.active) {
             Some(chat) if chat.is_approving() => APPROVE_HINTS,
             _ => HINTS,
@@ -1698,14 +1805,34 @@ impl Chats {
         if area.is_empty() {
             return;
         }
-        if self.tabs.is_empty() {
+        if self.tab_count() == 0 {
             frame.render_widget(Paragraph::new(welcome(area.width as usize)), area);
             return;
         }
-        let titles: Vec<String> = self.tabs.iter().map(Chat::title).collect();
+        let titles: Vec<String> = self
+            .tabs
+            .iter()
+            .map(Chat::title)
+            .chain(self.vendors.iter().map(|tab| tab.vendor.name.to_owned()))
+            .collect();
         let (tabs, hits) = tab_line(&titles, self.active, area);
         self.hits = hits;
         frame.render_widget(Paragraph::new(tabs), Rect { height: 1, ..area });
+        if area.height >= 2 {
+            self.vendor_size = (area.height - 1, area.width);
+        }
+        let scroll = self.vendor_scroll;
+        if let Some(tab) = self.active_vendor() {
+            if area.height >= 2 {
+                let body = Rect {
+                    y: area.y + 1,
+                    height: area.height - 1,
+                    ..area
+                };
+                tab.term.draw(frame, body, focused, scroll);
+            }
+            return;
+        }
         let chat = &mut self.tabs[self.active];
         let width = area.width as usize;
 
@@ -1845,12 +1972,26 @@ fn welcome(width: usize) -> Vec<Line<'static>> {
         Line::from("Press Enter or Alt+T to start a chat."),
         Line::default(),
     ];
-    for agent in &AGENTS {
-        for row in wrap(&format!("{}: {}", agent.name, agent.about), width) {
-            lines.push(Line::from(Span::styled(row, Style::new().fg(Color::Gray))));
+    let mut section = |title: &str, items: Vec<String>| {
+        lines.push(Line::from(title.to_owned()));
+        for item in items {
+            for row in wrap(&item, width) {
+                lines.push(Line::from(Span::styled(row, Style::new().fg(Color::Gray))));
+            }
         }
-    }
-    lines.push(Line::default());
+        lines.push(Line::default());
+    };
+    section(
+        "With your own plan, in the vendor's CLI:",
+        VENDORS.iter().map(Vendor::label).collect(),
+    );
+    section(
+        "With an API key, in Kalipso's agents:",
+        AGENTS
+            .iter()
+            .map(|agent| format!("{}: {}", agent.name, agent.about))
+            .collect(),
+    );
     for provider in Provider::ALL {
         let row = if provider.api_key().is_some() {
             Line::from(Span::styled(
