@@ -12,9 +12,10 @@ own login, and kalipso-cli never sees or stores those credentials.
 | Codex | `codex` | A ChatGPT plan, or an OpenAI API key |
 | Antigravity | `agy` | A Google account |
 
-kalipso-cli looks for the program on `PATH`, in `~/.local/bin`, and on your interactive shell's
+kalipso-cli looks for the program on `PATH`, then in `~/.local/bin`, then on your interactive shell's
 `PATH`, which covers installs through nvm or pnpm. If it isn't there, the tab shows the vendor's
-official install command and runs it when you press Enter.
+official install command and runs it if you type `y` and press Enter; any other answer closes the
+tab.
 
 The tab is a terminal running that CLI. Keys go to it, Ctrl+P and Alt+F included, except kalipso-cli's
 Alt keys for tabs and panes, Alt+S for scroll mode, and Ctrl+Q. The tab closes when the CLI exits.
