@@ -5,7 +5,8 @@ kalipso-cli path/to/project              # defaults to the current folder
 cargo run --release -- path/to/project   # or from source
 ```
 
-**Ctrl+Q** quits. With unsaved changes or a running agent it asks first: `y` quits, Esc stays.
+**Ctrl+Q** quits. With unsaved changes, a running agent or an open Claude Code, Codex or Antigravity
+tab it asks first: `y` quits, Esc stays.
 
 To chat with an agent, press Alt+4 and Enter, and pick one. Claude Code, Codex and Antigravity sign in
 with your own plan ([details](agents.md#claude-code-codex-and-antigravity)); kalipso-cli's own agents
@@ -35,7 +36,8 @@ If these don't arrive, see [Troubleshooting](troubleshooting.md).
 ## Finding things
 
 **Ctrl+P** finds a file by fuzzy name and **Alt+F** searches the project's text, from anywhere except
-the terminal pane, where those keys belong to the shell. Search skips gitignored and private files.
+the terminal pane and Claude Code, Codex or Antigravity tabs, where those keys belong to the program.
+Search skips gitignored and private files.
 
 ## Files pane
 

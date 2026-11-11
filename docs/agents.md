@@ -18,8 +18,13 @@ official install command and runs it if you type `y` and press Enter; any other 
 tab.
 
 The tab is a terminal running that CLI. Keys go to it, Ctrl+P and Alt+F included, except kalipso-cli's
-Alt keys for tabs and panes, Alt+S for scroll mode, and Ctrl+Q. The tab closes when the CLI exits.
+Alt keys for tabs and panes, Alt+S for scroll mode, and Ctrl+Q. The tab closes when the CLI exits,
+and Ctrl+Q asks before quitting while one is open, since kalipso-cli can't tell whether it's mid-task.
 These tabs aren't saved with your chats: each CLI keeps its own history.
+
+The tab gets your environment, as a shell would. If `ANTHROPIC_API_KEY` is set, for kalipso-cli's own
+agents for example, Claude Code asks once whether to use that key instead of your plan. Answer No to
+keep using your plan; `/status` in Claude Code shows which one is in use.
 
 ## Providers
 
