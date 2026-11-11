@@ -1555,8 +1555,10 @@ impl Chats {
         }
     }
 
+    /// Whether quitting would stop an agent: a Kalipso chat that's working, or a vendor's CLI,
+    /// which may be mid-task without Kalipso being able to tell.
     pub fn any_busy(&self) -> bool {
-        self.tabs.iter().any(Chat::is_busy)
+        !self.vendors.is_empty() || self.tabs.iter().any(Chat::is_busy)
     }
 
     /// The tool call a chat is waiting for an answer on.

@@ -1972,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn alt_w_closes_a_vendor_tab() {
+    fn ctrl_q_asks_while_a_vendor_tab_is_open_and_alt_w_closes_it() {
         let (_, dir) = app_in("vendor-close");
         let (tx, _rx) = mpsc::sync_channel(256);
         let mut app = App::new(dir.clone(), tx);
@@ -1983,8 +1983,18 @@ mod tests {
         ];
         app.chats.open_vendor(&VENDORS[0]).unwrap();
         app.set_focus(Focus::Chat);
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(
+            !app.should_quit && app.modal.is_some(),
+            "the CLI may be mid-task"
+        );
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.should_quit && app.modal.is_none());
+
         app.handle(alt(KeyCode::Char('w')));
         assert!(app.chats.vendors.is_empty());
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(app.should_quit, "nothing is left to stop");
     }
 
     #[test]
