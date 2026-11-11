@@ -730,11 +730,11 @@ dependencies = [
 
 [[package]]
 name = "kalipso"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "kalipso-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crossterm",
  "ignore",
