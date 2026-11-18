@@ -7,6 +7,7 @@ mod llm;
 mod lsp;
 mod term;
 mod tools;
+mod vendors;
 
 use std::io::{self, IsTerminal, stdout};
 use std::path::PathBuf;

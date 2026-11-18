@@ -22,7 +22,7 @@ Kalipso is two separate programs that work well together.
 | Install either program | [Installation](installation.md) |
 | Know what the desktop program does and how to remove it | [Kalipso desktop](desktop.md) |
 | Learn the panes, keys, editor and search | [Using kalipso-cli](cli.md) |
-| Chat with Claude, OpenAI, Grok or OpenRouter agents | [AI providers and agents](agents.md) |
+| Chat with Claude, OpenAI, Grok or OpenRouter agents, or run Claude Code, Codex or Antigravity | [AI providers and agents](agents.md) |
 | Get go-to-definition and diagnostics | [Language servers](language-servers.md) |
 | Fix Alt keys, tmux, WezTerm or Windows problems | [Troubleshooting](troubleshooting.md) |
 | Build, test and release | [Development](development.md) |

@@ -148,7 +148,7 @@ make_program() { # body of the bundled wezterm, platform
     program=kalipso-v9.9.9-$platform
     rm -rf "${fixtures:?}/$program"
     case $platform in
-    *linux) wezterm=$fixtures/$program/wezterm/usr/bin/wezterm launcher=$fixtures/$program/kalipso ;;
+    *linux) wezterm=$fixtures/$program/wezterm/usr/bin/wezterm-gui launcher=$fixtures/$program/kalipso ;;
     *macos)
         wezterm=$fixtures/$program/Kalipso.app/Contents/Resources/WezTerm.app/Contents/MacOS/wezterm
         launcher=$fixtures/$program/Kalipso.app/Contents/MacOS/kalipso
@@ -160,13 +160,17 @@ make_program() { # body of the bundled wezterm, platform
     (cd "$fixtures" && tar czf "$program.tar.gz" "$program" && sha256sum "$program.tar.gz" >"$program.tar.gz.sha256")
 }
 
+# install.sh downloads install-cli.sh, which then finds the kalipso-cli releases made above.
+cp "$repo/install-cli.sh" "$fixtures/install-cli.sh"
 make_program ':'
 new_home
 run
 check "installs the program" '[ -x "$home/$app/kalipso" ]'
 check "links the kalipso command to it" '[ "$(readlink "$home/.local/bin/kalipso")" = "$home/$app/kalipso" ]'
 check "adds a desktop entry" 'grep -qx "Exec=\"$home/$app/kalipso\"" "$home/.local/share/applications/kalipso.desktop" && grep -qx StartupWMClass=kalipso "$home/.local/share/applications/kalipso.desktop"'
+check "installs kalipso-cli, which the window runs" '[ -x "$home/.local/bin/kalipso-cli" ] && ! grep -q built "$home/.local/bin/kalipso-cli"'
 check "adds the command's folder to PATH" 'grep -q "\.local/bin" "$home/.zshrc"'
+check "says it added the folder to PATH once" '[ "$(grep -c "Added ~/.local/bin" "$root/out")" = 1 ]'
 touch "$home/$app/stale"
 run
 check "replaces an older install" '[ -x "$home/$app/kalipso" ] && [ ! -e "$home/$app/stale" ]'
@@ -176,15 +180,24 @@ new_home
 mkdir -p "$home/.local/bin"
 echo old >"$home/.local/bin/kalipso"
 run
-check "replaces the old terminal IDE and says where it went" '[ -L "$home/.local/bin/kalipso" ] && grep -q "install-cli.sh" "$root/out"'
+check "replaces the old terminal IDE and says where it went" '[ -L "$home/.local/bin/kalipso" ] && grep -q "now kalipso-cli" "$root/out" && [ -x "$home/.local/bin/kalipso-cli" ]'
+
+stub "$fixtures/install-cli.sh" 'echo "kalipso-cli install: no C compiler" >&2; exit 1'
+new_home
+check "says when kalipso-cli didn't install, after installing the program" '! run && [ -x "$home/$app/kalipso" ] && grep -q "no C compiler" "$root/out" && grep -q "kalipso-cli isn.t" "$root/out" && grep -q "\.local/bin" "$home/.zshrc"'
+rm "$fixtures/install-cli.sh"
+new_home
+check "says when install-cli.sh can't be downloaded" '! run && [ -x "$home/$app/kalipso" ] && grep -q "kalipso-cli isn.t" "$root/out"'
+cp "$repo/install-cli.sh" "$fixtures/install-cli.sh"
 
 new_home
 run
 touch "$home/$app/kept"
 echo "0000  $program.tar.gz" >"$fixtures/$program.tar.gz.sha256"
 check "refuses a bad checksum and keeps what's installed" '! run && [ -e "$home/$app/kept" ] && grep -q "checksum mismatch" "$root/out"'
-make_program 'exit 1'
+make_program 'echo "wezterm-gui: error while loading shared libraries: libxkbcommon-x11.so.0" >&2; exit 127'
 check "refuses a build that can't run here and keeps what's installed" '! run && [ -e "$home/$app/kept" ] && grep -q "run on this system" "$root/out"'
+check "says why it can't run" 'grep -q "libxkbcommon-x11.so.0" "$root/out"'
 rm "$fixtures/$program.tar.gz"
 check "explains a build that isn't uploaded yet" '! run && [ -e "$home/$app/kept" ] && grep -q "try again soon" "$root/out"'
 
@@ -193,6 +206,7 @@ new_home
 os=Darwin arch=arm64 run
 check "installs the app on Apple silicon" '[ -x "$home/Applications/Kalipso.app/Contents/MacOS/kalipso" ] && [ "$(readlink "$home/.local/bin/kalipso")" = "$home/Applications/Kalipso.app/Contents/MacOS/kalipso" ]'
 check "adds no desktop entry on macOS" '[ ! -e "$home/.local/share/applications" ]'
+check "installs kalipso-cli on Apple silicon" '[ -x "$home/.local/bin/kalipso-cli" ] && ! grep -q built "$home/.local/bin/kalipso-cli"'
 
 new_home
 check "has no build for Intel Macs" '! os=Darwin arch=x86_64 run && grep -q "no Kalipso build" "$root/out" && [ ! -e "$home/.local" ]'

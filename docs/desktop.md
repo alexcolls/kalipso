@@ -2,7 +2,8 @@
 
 Kalipso is [WezTerm](https://wezterm.org) packaged with
 [this configuration](https://github.com/alexcolls/wezterm-config), ten live-switchable themes and
-FiraCode Nerd Font. It opens your login shell, or PowerShell on Windows.
+FiraCode Nerd Font. It opens [kalipso-cli](cli.md) in the folder you start it from, or your login
+shell if kalipso-cli isn't installed. On Windows it opens PowerShell.
 
 It keeps its own copy of WezTerm and its config, so a WezTerm you already use is left alone.
 

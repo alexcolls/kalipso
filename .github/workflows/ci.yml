@@ -39,7 +39,7 @@ jobs:
       - run: rustup toolchain install stable --profile minimal -c clippy
       - run: cargo clippy -p kalipso --locked -- -D warnings
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri
+        run: sudo apt-get update && sudo apt-get install -y xvfb libegl1 libgl1-mesa-dri libxkbcommon0 libxkbcommon-x11-0
       - run: desktop/bundle.sh dev
       - if: runner.os == 'Windows'
         run: tests/install.ps1

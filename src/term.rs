@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender, SyncSender};
 use std::thread;
 
@@ -19,6 +20,9 @@ pub const SCROLL_HINTS: &str = "SCROLL MODE  ↑↓ PgUp/PgDn Home/End move  Esc
 
 const SCROLLBACK: usize = 10_000;
 const READ_CHUNK: usize = 8192;
+
+/// Output from every terminal, in any pane, arrives on one channel, so ids are unique across them.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Answers the questions programs ask their terminal. Without this, anything that
 /// queries the cursor position or terminal type stalls until it times out.
@@ -74,6 +78,15 @@ impl Drop for Term {
 }
 
 impl Term {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    #[cfg(test)]
+    pub fn contents(&self) -> String {
+        self.parser.screen().contents()
+    }
+
     fn title(&self) -> String {
         match &self.parser.callbacks().title {
             Some(title) if !title.is_empty() => title.clone(),
@@ -83,6 +96,89 @@ impl Term {
 
     fn send(&mut self, bytes: Vec<u8>) {
         let _ = self.input.send(bytes);
+    }
+
+    /// Collects the exit status of a program that has ended.
+    pub fn reap(&mut self) {
+        let _ = self.child.try_wait();
+    }
+
+    /// Sends a key to the program, or moves through the scrollback while `scroll_mode` is on.
+    pub fn on_key(&mut self, key: KeyEvent, scroll_mode: &mut bool) {
+        if *scroll_mode {
+            let page = self.size.0 as isize;
+            match key.code {
+                KeyCode::Up => self.scroll(1),
+                KeyCode::Down => self.scroll(-1),
+                KeyCode::PageUp => self.scroll(page),
+                KeyCode::PageDown => self.scroll(-page),
+                KeyCode::Home => self.scroll(SCROLLBACK as isize),
+                KeyCode::End => self.scroll(-(SCROLLBACK as isize)),
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.parser.screen_mut().set_scrollback(0);
+                    *scroll_mode = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('s') {
+            *scroll_mode = true;
+            return;
+        }
+        let bytes = key_to_bytes(key, self.parser.screen().application_cursor());
+        if !bytes.is_empty() {
+            self.parser.screen_mut().set_scrollback(0);
+            self.send(bytes);
+        }
+    }
+
+    pub fn paste(&mut self, text: &str) {
+        // Removes control characters, so pasted text can't end the bracket early and run commands.
+        let clean: String = text
+            .replace("\r\n", "\r")
+            .replace('\n', "\r")
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\r' | '\t'))
+            .collect();
+        let bytes = if self.parser.screen().bracketed_paste() {
+            format!("\x1b[200~{clean}\x1b[201~")
+        } else {
+            clean
+        };
+        self.parser.screen_mut().set_scrollback(0);
+        self.send(bytes.into_bytes());
+    }
+
+    pub fn wheel(&mut self, up: bool) {
+        if self.parser.screen().alternate_screen() {
+            // Full-screen programs like less have no scrollback, so the wheel moves them instead.
+            let code = if up { KeyCode::Up } else { KeyCode::Down };
+            let arrow = key_to_bytes(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                self.parser.screen().application_cursor(),
+            );
+            self.send(arrow.repeat(3));
+        } else {
+            self.scroll(if up { 3 } else { -3 });
+        }
+    }
+
+    /// Draws the screen into `area`, sized to fit it.
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool, scroll_mode: bool) {
+        self.resize(area.height, area.width);
+        let screen = self.parser.screen();
+        // The widget draws its own cursor block. The real one looks right in every terminal.
+        let mut hidden = Cursor::default();
+        hidden.hide();
+        frame.render_widget(PseudoTerminal::new(screen).cursor(hidden), area);
+        if focused && !screen.hide_cursor() && screen.scrollback() == 0 && !scroll_mode {
+            let (row, col) = screen.cursor_position();
+            frame.set_cursor_position((
+                area.x + col.min(area.width - 1),
+                area.y + row.min(area.height - 1),
+            ));
+        }
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -99,7 +195,7 @@ impl Term {
         }
     }
 
-    fn feed(&mut self, bytes: &[u8]) {
+    pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
         let reply = std::mem::take(&mut self.parser.callbacks_mut().reply);
         if !reply.is_empty() {
@@ -115,16 +211,25 @@ impl Term {
     }
 }
 
-fn spawn(
-    id: u64,
+/// The user's shell, in `root`.
+fn shell(root: &Path) -> CommandBuilder {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+    let mut command = CommandBuilder::new(shell);
+    command.cwd(root);
+    command
+}
+
+/// Starts `command` in a new terminal. `number` names the tab until the program sets a title.
+pub fn spawn(
+    mut command: CommandBuilder,
     number: u64,
-    root: &PathBuf,
     size: (u16, u16),
     tx: SyncSender<Event>,
 ) -> Result<Term, String> {
     fn text(err: impl std::fmt::Display) -> String {
         err.to_string()
     }
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let (rows, cols) = size;
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -134,9 +239,6 @@ fn spawn(
             pixel_height: 0,
         })
         .map_err(text)?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-    let mut command = CommandBuilder::new(shell);
-    command.cwd(root);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("TERM_PROGRAM", "kalipso");
@@ -190,7 +292,6 @@ fn spawn(
 pub struct Terminals {
     pub tabs: Vec<Term>,
     pub active: usize,
-    next_id: u64,
     next_number: u64,
     root: PathBuf,
     tx: SyncSender<Event>,
@@ -205,7 +306,6 @@ impl Terminals {
         Terminals {
             tabs: Vec::new(),
             active: 0,
-            next_id: 1,
             next_number: 1,
             root,
             tx,
@@ -218,13 +318,11 @@ impl Terminals {
 
     pub fn new_tab(&mut self) -> Result<(), String> {
         let term = spawn(
-            self.next_id,
+            shell(&self.root),
             self.next_number,
-            &self.root,
             self.last_size,
             self.tx.clone(),
         )?;
-        self.next_id += 1;
         self.next_number += 1;
         self.tabs.push(term);
         self.active = self.tabs.len() - 1;
@@ -255,7 +353,7 @@ impl Terminals {
 
     pub fn on_exit(&mut self, id: u64) {
         if let Some(index) = self.tabs.iter().position(|term| term.id == id) {
-            let _ = self.tabs[index].child.try_wait();
+            self.tabs[index].reap();
             self.tabs.remove(index);
             self.active = self.active.min(self.tabs.len().saturating_sub(1));
             self.scroll_mode = false;
@@ -263,55 +361,15 @@ impl Terminals {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
-        let Some(term) = self.tabs.get_mut(self.active) else {
-            return;
-        };
-        if self.scroll_mode {
-            let page = term.size.0 as isize;
-            match key.code {
-                KeyCode::Up => term.scroll(1),
-                KeyCode::Down => term.scroll(-1),
-                KeyCode::PageUp => term.scroll(page),
-                KeyCode::PageDown => term.scroll(-page),
-                KeyCode::Home => term.scroll(SCROLLBACK as isize),
-                KeyCode::End => term.scroll(-(SCROLLBACK as isize)),
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    term.parser.screen_mut().set_scrollback(0);
-                    self.scroll_mode = false;
-                }
-                _ => {}
-            }
-            return;
-        }
-        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('s') {
-            self.scroll_mode = true;
-            return;
-        }
-        let bytes = key_to_bytes(key, term.parser.screen().application_cursor());
-        if !bytes.is_empty() {
-            term.parser.screen_mut().set_scrollback(0);
-            term.send(bytes);
+        if let Some(term) = self.tabs.get_mut(self.active) {
+            term.on_key(key, &mut self.scroll_mode);
         }
     }
 
     pub fn paste(&mut self, text: &str) {
-        let Some(term) = self.tabs.get_mut(self.active) else {
-            return;
-        };
-        // Removes control characters, so pasted text can't end the bracket early and run commands.
-        let clean: String = text
-            .replace("\r\n", "\r")
-            .replace('\n', "\r")
-            .chars()
-            .filter(|c| !c.is_control() || matches!(c, '\r' | '\t'))
-            .collect();
-        let bytes = if term.parser.screen().bracketed_paste() {
-            format!("\x1b[200~{clean}\x1b[201~")
-        } else {
-            clean
-        };
-        term.parser.screen_mut().set_scrollback(0);
-        term.send(bytes.into_bytes());
+        if let Some(term) = self.tabs.get_mut(self.active) {
+            term.paste(text);
+        }
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
@@ -325,21 +383,10 @@ impl Terminals {
         let Some(term) = self.tabs.get_mut(self.active) else {
             return;
         };
-        let up = match mouse.kind {
-            MouseEventKind::ScrollUp => true,
-            MouseEventKind::ScrollDown => false,
-            _ => return,
-        };
-        if term.parser.screen().alternate_screen() {
-            // Full-screen programs like less have no scrollback, so the wheel moves them instead.
-            let code = if up { KeyCode::Up } else { KeyCode::Down };
-            let arrow = key_to_bytes(
-                KeyEvent::new(code, KeyModifiers::NONE),
-                term.parser.screen().application_cursor(),
-            );
-            term.send(arrow.repeat(3));
-        } else {
-            term.scroll(if up { 3 } else { -3 });
+        match mouse.kind {
+            MouseEventKind::ScrollUp => term.wheel(true),
+            MouseEventKind::ScrollDown => term.wheel(false),
+            _ => {}
         }
     }
 
@@ -381,20 +428,7 @@ impl Terminals {
         self.hits = hits;
         frame.render_widget(Paragraph::new(tabs), Rect { height: 1, ..area });
 
-        let term = &mut self.tabs[self.active];
-        term.resize(body.height, body.width);
-        let screen = term.parser.screen();
-        // The widget draws its own cursor block. The real one looks right in every terminal.
-        let mut hidden = Cursor::default();
-        hidden.hide();
-        frame.render_widget(PseudoTerminal::new(screen).cursor(hidden), body);
-        if focused && !screen.hide_cursor() && screen.scrollback() == 0 && !self.scroll_mode {
-            let (row, col) = screen.cursor_position();
-            frame.set_cursor_position((
-                body.x + col.min(body.width - 1),
-                body.y + row.min(body.height - 1),
-            ));
-        }
+        self.tabs[self.active].draw(frame, body, focused, self.scroll_mode);
         error
     }
 }
